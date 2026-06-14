@@ -427,13 +427,10 @@ class CredentialManager {
     // Test OpenAI API
     if (this.credentials.openai) {
       try {
-        const { Configuration, OpenAIApi } = require('openai');
-        const configuration = new Configuration({
-          apiKey: this.credentials.openai.apiKey,
-        });
-        const openai = new OpenAIApi(configuration);
+        const OpenAI = require('openai');
+        const openai = new OpenAI({ apiKey: this.credentials.openai.apiKey });
         
-        await openai.listModels();
+        await openai.models.list();
         results.openai = true;
         console.log(chalk.green('✅ OpenAI API connection successful'));
       } catch (error) {

@@ -1,4 +1,9 @@
-const sharp = require('sharp');
+let sharp;
+try {
+  sharp = require('sharp');
+} catch (e) {
+  // sharp is optional - will use fallback if not available
+}
 const path = require('path');
 const fs = require('fs').promises;
 const { Logger } = require('../utils/logger');
@@ -186,6 +191,15 @@ class ThumbnailDesignerAgent {
     };
   }
 
+  escapeXml(text) {
+    return text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&apos;');
+  }
+
   async createPrompt(concept) {
     const prompt = `Create a YouTube thumbnail with the following specifications:
     Style: ${concept.style}
@@ -204,11 +218,17 @@ class ThumbnailDesignerAgent {
   }
 
   async createThumbnail(concept) {
-    // Create a base thumbnail using Sharp
     const width = 1280;
     const height = 720;
     
     const outputPath = path.join(__dirname, '..', 'uploads', 'thumbnails', `thumbnail_${Date.now()}.png`);
+    await fs.mkdir(path.dirname(outputPath), { recursive: true });
+    
+    if (!sharp) {
+      this.logger.warn('sharp not available, creating placeholder thumbnail');
+      await fs.writeFile(outputPath + '.json', JSON.stringify({ concept, placeholder: true, dimensions: { width, height } }));
+      return outputPath + '.json';
+    }
     
     // Create gradient background
     const svg = `
@@ -251,7 +271,16 @@ class ThumbnailDesignerAgent {
   }
 
   async addTextOverlay(imagePath, concept) {
+    if (!sharp) {
+      this.logger.warn('sharp not available, skipping text overlay');
+      return imagePath;
+    }
+    
     const outputPath = path.join(__dirname, '..', 'uploads', 'thumbnails', `thumbnail_final_${Date.now()}.png`);
+    await fs.mkdir(path.dirname(outputPath), { recursive: true });
+    
+    const escapedPrimary = this.escapeXml(concept.primaryText);
+    const escapedSecondary = this.escapeXml(concept.secondaryText);
     
     // Create text overlay SVG
     const textSvg = `
@@ -278,12 +307,12 @@ class ThumbnailDesignerAgent {
         </style>
         
         <!-- Shadow -->
-        <text x="642" y="302" class="primary shadow">${concept.primaryText}</text>
-        <text x="642" y="402" class="secondary shadow">${concept.secondaryText}</text>
+        <text x="642" y="302" class="primary shadow">${escapedPrimary}</text>
+        <text x="642" y="402" class="secondary shadow">${escapedSecondary}</text>
         
         <!-- Main text -->
-        <text x="640" y="300" class="primary">${concept.primaryText}</text>
-        <text x="640" y="400" class="secondary">${concept.secondaryText}</text>
+        <text x="640" y="300" class="primary">${escapedPrimary}</text>
+        <text x="640" y="400" class="secondary">${escapedSecondary}</text>
       </svg>
     `;
     
@@ -301,6 +330,11 @@ class ThumbnailDesignerAgent {
   }
 
   async optimizeForYouTube(imagePath) {
+    if (!sharp) {
+      this.logger.warn('sharp not available, skipping YouTube optimization');
+      return imagePath;
+    }
+    
     const outputPath = path.join(__dirname, '..', 'uploads', 'thumbnails', `thumbnail_optimized_${Date.now()}.jpg`);
     
     // YouTube optimization: JPEG format, proper compression
@@ -330,8 +364,12 @@ class ThumbnailDesignerAgent {
   }
 
   async getFileSize(filePath) {
-    const stats = await fs.stat(filePath);
-    return stats.size;
+    try {
+      const stats = await fs.stat(filePath);
+      return stats.size;
+    } catch {
+      return 0;
+    }
   }
 
   async generateABVariants(concept) {

@@ -1,4 +1,5 @@
 const axios = require('axios');
+const OpenAI = require('openai');
 const { Logger } = require('../utils/logger');
 
 class ContentStrategyAgent {
@@ -9,10 +10,18 @@ class ContentStrategyAgent {
     this.trendingTopics = [];
     this.competitorData = [];
     this.contentCalendar = [];
+    this.openai = null;
   }
 
   async initialize() {
     this.logger.info('Initializing Content Strategy Agent...');
+    
+    const apiKey = this.credentials?.openai?.apiKey || process.env.OPENAI_API_KEY;
+    if (apiKey) {
+      this.openai = new OpenAI({ apiKey });
+      this.logger.info('OpenAI connected for strategy generation');
+    }
+    
     await this.loadHistoricalData();
     await this.analyzeTrends();
     return true;
@@ -261,11 +270,31 @@ class ContentStrategyAgent {
   }
 
   async generateAngle(topic) {
-    // Generate unique angle for the topic
+    // Try AI-powered angle generation
+    if (this.openai) {
+      try {
+        const response = await this.openai.chat.completions.create({
+          model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+          messages: [
+            { role: 'system', content: 'You are a YouTube content strategist. Generate a single compelling video angle/title for the given topic. Return only the angle text, nothing else.' },
+            { role: 'user', content: `Generate a unique, engaging video angle for the topic: "${topic}". Make it specific and clickworthy without being misleading.` }
+          ],
+          temperature: 0.9,
+          max_tokens: 100
+        });
+        const angle = response.choices[0].message.content.trim().replace(/^["']|["']$/g, '');
+        if (angle) return angle;
+      } catch (error) {
+        this.logger.error('AI angle generation failed, using templates:', error);
+      }
+    }
+
+    // Fallback to templates
+    const nextYear = new Date().getFullYear() + 1;
     const angles = [
       `The Ultimate Guide to ${topic}`,
       `${topic}: What Nobody Is Telling You`,
-      `How ${topic} Will Change Everything in 2025`,
+      `How ${topic} Will Change Everything in ${nextYear}`,
       `The Hidden Truth About ${topic}`,
       `${topic} Explained in 5 Minutes`,
       `Why ${topic} Is More Important Than You Think`,

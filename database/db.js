@@ -183,6 +183,15 @@ class Database {
         value TEXT NOT NULL,
         description TEXT,
         updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+      )`,
+
+      // Automation Events (used by DailyAutomation scheduler)
+      `CREATE TABLE IF NOT EXISTS automation_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        event_type TEXT NOT NULL,
+        status TEXT NOT NULL,
+        data TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
       )`
     ];
 

@@ -1,3 +1,4 @@
+const OpenAI = require('openai');
 const { Logger } = require('../utils/logger');
 
 class ScriptWriterAgent {
@@ -6,10 +7,20 @@ class ScriptWriterAgent {
     this.credentials = credentials;
     this.logger = new Logger('ScriptWriter');
     this.templates = this.loadTemplates();
+    this.openai = null;
   }
 
   async initialize() {
     this.logger.info('Initializing Script Writer Agent...');
+    
+    const apiKey = this.credentials?.openai?.apiKey || process.env.OPENAI_API_KEY;
+    if (apiKey) {
+      this.openai = new OpenAI({ apiKey });
+      this.logger.info('OpenAI connected for script generation');
+    } else {
+      this.logger.warn('No OpenAI API key - using template-based generation');
+    }
+    
     return true;
   }
 
@@ -49,7 +60,66 @@ class ScriptWriterAgent {
       
       const template = this.templates[strategy.contentType.toLowerCase()] || this.templates.explainer;
       
-      // Generate script components
+      // Try AI-powered generation first
+      const aiScript = await this.generateScriptWithAI(strategy);
+      if (aiScript) {
+        const script = {
+          title: aiScript.title,
+          hook: { type: 'ai-generated', text: aiScript.hook, duration: '0:00-0:05' },
+          introduction: {
+            greeting: '',
+            topicIntro: aiScript.introduction,
+            valueProposition: '',
+            credibility: '',
+            duration: '0:05-0:20'
+          },
+          mainContent: {
+            sections: (aiScript.sections || []).map(s => ({
+              type: 'ai-generated',
+              title: s.title,
+              content: s.content,
+              visuals: s.visuals ? [s.visuals] : [],
+              duration: s.duration || 60
+            })),
+            totalDuration: (aiScript.sections || []).reduce((sum, s) => sum + (s.duration || 60), 0)
+          },
+          conclusion: {
+            type: 'conclusion',
+            title: 'Wrapping Up',
+            recap: [aiScript.conclusion],
+            finalThought: '',
+            duration: '30 seconds'
+          },
+          callToAction: {
+            type: 'call_to_action',
+            subscribe: aiScript.callToAction,
+            like: '',
+            comment: '',
+            nextVideo: '',
+            duration: '15 seconds'
+          },
+          duration: '0:00',
+          tone: template.tone,
+          pacing: template.pacing,
+          keywords: strategy.keywords,
+          metadata: {
+            strategy: strategy,
+            generatedAt: new Date().toISOString(),
+            version: '1.0',
+            generatedWith: 'ai'
+          }
+        };
+        
+        script.duration = this.estimateDuration(script.mainContent);
+        script.fullScript = this.formatFullScript(script);
+        await this.db.saveScript(script);
+        this.logger.info(`AI-generated script: ${script.title}`);
+        return script;
+      }
+
+      this.logger.info('Falling back to template-based generation');
+      
+      // Template-based fallback (original logic)
       const hook = await this.generateHook(strategy);
       const introduction = await this.generateIntroduction(strategy);
       const mainContent = await this.generateMainContent(strategy, template);
@@ -86,6 +156,68 @@ class ScriptWriterAgent {
     } catch (error) {
       this.logger.error('Failed to generate script:', error);
       throw error;
+    }
+  }
+
+  async generateWithAI(systemPrompt, userPrompt) {
+    if (!this.openai) return null;
+    try {
+      const response = await this.openai.chat.completions.create({
+        model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt }
+        ],
+        temperature: 0.8,
+        max_tokens: 3000
+      });
+      return response.choices[0].message.content;
+    } catch (error) {
+      this.logger.error('AI generation failed:', error);
+      return null;
+    }
+  }
+
+  async generateScriptWithAI(strategy) {
+    if (!this.openai) return null;
+    
+    const systemPrompt = `You are a professional YouTube script writer. Write engaging, well-structured video scripts optimized for audience retention. Output valid JSON only, no markdown fences.`;
+    
+    const userPrompt = `Write a complete YouTube video script for the following:
+Topic: ${strategy.topic}
+Angle: ${strategy.angle}
+Content Type: ${strategy.contentType}
+Target Audience: ${strategy.targetAudience}
+
+Return a JSON object with these fields:
+{
+  "title": "compelling video title",
+  "hook": "attention-grabbing opening line (5 seconds)",
+  "introduction": "brief intro establishing value (15 seconds)",
+  "sections": [
+    {"title": "section name", "content": "full narration text for this section", "duration": estimated_seconds, "visuals": "visual direction notes"}
+  ],
+  "conclusion": "recap and final thought",
+  "callToAction": "subscribe/like/comment prompt"
+}
+
+Requirements:
+- Make the content factual, engaging, and specific to the topic
+- Include 3-5 substantive sections with real content
+- Each section should have at least 2-3 paragraphs of narration text
+- Avoid generic filler phrases
+- The hook should immediately grab attention
+- Return ONLY the JSON object, no other text`;
+
+    const result = await this.generateWithAI(systemPrompt, userPrompt);
+    if (!result) return null;
+    
+    try {
+      const cleaned = result.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+      return JSON.parse(cleaned);
+    } catch (error) {
+      this.logger.error('Failed to parse AI script response:', error);
+      return null;
     }
   }
 

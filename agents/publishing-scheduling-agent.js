@@ -1,5 +1,6 @@
 const { google } = require('googleapis');
-const fs = require('fs').promises;
+const fsPromises = require('fs').promises;
+const fs = require('fs');
 const path = require('path');
 const { Logger } = require('../utils/logger');
 
@@ -109,6 +110,15 @@ class PublishingSchedulingAgent {
   async uploadToYouTube(scheduleEntry) {
     const { metadata } = scheduleEntry;
     
+    // Verify we have a real video file, not a placeholder
+    if (!metadata.video || !metadata.video.path) {
+      throw new Error('No video file path available for upload');
+    }
+
+    if (metadata.video.simulated) {
+      throw new Error('Cannot upload simulated video. Configure AI services to generate real video content.');
+    }
+
     // Prepare video metadata
     const videoMetadata = {
       snippet: {
@@ -152,18 +162,24 @@ class PublishingSchedulingAgent {
   }
 
   async getVideoStream(videoPath) {
-    // In a real implementation, this would return a file stream
-    // For now, we'll simulate it
-    return JSON.stringify({
-      message: 'Video stream would be provided here',
-      path: videoPath,
-      timestamp: new Date().toISOString()
-    });
+    // Handle simulation/placeholder files
+    if (videoPath.endsWith('.assembly.json') || videoPath.endsWith('.info')) {
+      throw new Error(`Cannot upload placeholder file: ${videoPath}. A real video file is required. Configure AI services to generate real video content.`);
+    }
+    
+    // Verify file exists
+    try {
+      await fsPromises.access(videoPath);
+    } catch {
+      throw new Error(`Video file not found: ${videoPath}`);
+    }
+    
+    return fs.createReadStream(videoPath);
   }
 
   async uploadThumbnail(videoId, thumbnailPath) {
     try {
-      const thumbnailBuffer = await fs.readFile(thumbnailPath);
+      const thumbnailBuffer = await fsPromises.readFile(thumbnailPath);
       
       await this.youtube.thumbnails.set({
         videoId: videoId,
@@ -180,7 +196,7 @@ class PublishingSchedulingAgent {
 
   async uploadCaptions(videoId, captionsPath) {
     try {
-      const captionsContent = await fs.readFile(captionsPath, 'utf8');
+      const captionsContent = await fsPromises.readFile(captionsPath, 'utf8');
       
       await this.youtube.captions.insert({
         part: 'snippet',
