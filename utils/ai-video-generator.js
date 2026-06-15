@@ -8,6 +8,14 @@ const axios = require('axios');
 const FormData = require('form-data');
 const { Logger } = require('./logger');
 
+// Optional sharp import - falls back to raw AI image without text overlay
+let sharp;
+try {
+  sharp = require('sharp');
+} catch {
+  // sharp not available; text overlay on thumbnails will be skipped
+}
+
 const execAsync = promisify(exec);
 
 class AIVideoGenerator {
@@ -603,36 +611,151 @@ class AIVideoGenerator {
         return await this.simulateThumbnailGeneration(script, style);
       }
 
-      const prompt = `YouTube thumbnail for "${script.title}", ${style} style, eye-catching, high contrast text, professional design, clickable, engaging`;
+      const prompt = [
+        `YouTube thumbnail background image in ${style} style.`,
+        `Subject: "${script.title}".`,
+        'Composition: bold, saturated colors with high contrast.',
+        'Dramatic cinematic lighting with strong focal point in the center.',
+        'Leave the bottom-third and right side relatively clean and uncluttered',
+        'so text can be overlaid later.',
+        'Do NOT render any text, letters, words, or watermarks in the image.',
+        'Ultra-sharp, 4K quality, professional photography look.',
+        'Vibrant color palette that pops on small screens.',
+      ].join(' ');
       
       const response = await this.openai.images.generate({
-        model: "gpt-image-1-mini",
+        model: "gpt-image-1",
         prompt: prompt,
         n: 1,
         size: "1536x1024",
-        quality: "medium"
+        quality: "high"
       });
 
-      const thumbnailPath = path.join(__dirname, '..', 'uploads', 'thumbnails', `thumbnail_${Date.now()}.png`);
-      await fs.mkdir(path.dirname(thumbnailPath), { recursive: true });
+      const thumbnailDir = path.join(__dirname, '..', 'uploads', 'thumbnails');
+      await fs.mkdir(thumbnailDir, { recursive: true });
+      const rawPath = path.join(thumbnailDir, `thumbnail_${Date.now()}.png`);
       
       const imgData = response.data[0];
       if (imgData.b64_json) {
-        await fs.writeFile(thumbnailPath, Buffer.from(imgData.b64_json, 'base64'));
+        await fs.writeFile(rawPath, Buffer.from(imgData.b64_json, 'base64'));
       } else if (imgData.url) {
-        await this.downloadImage(imgData.url, thumbnailPath);
+        await this.downloadImage(imgData.url, rawPath);
       }
+
+      // Overlay the title text using sharp (if available)
+      const finalPath = await this._overlayTitleText(rawPath, script.title);
       
       return {
-        path: thumbnailPath,
-        url: response.data[0].url,
-        dimensions: { width: 1792, height: 1024 },
-        fileSize: await this.getFileSize(thumbnailPath)
+        path: finalPath,
+        url: imgData.url || null,
+        dimensions: { width: 1536, height: 1024 },
+        fileSize: await this.getFileSize(finalPath)
       };
     } catch (error) {
       this.logger.error('Thumbnail generation failed:', error);
       return await this.simulateThumbnailGeneration(script, style);
     }
+  }
+
+  /**
+   * Overlay bold title text onto a thumbnail image using sharp + SVG.
+   * Falls back to returning the raw image path if sharp is unavailable.
+   */
+  async _overlayTitleText(imagePath, title) {
+    if (!sharp) {
+      this.logger.warn('sharp not available, skipping text overlay on thumbnail');
+      return imagePath;
+    }
+
+    try {
+      const WIDTH = 1536;
+      const HEIGHT = 1024;
+      const PADDING = 60;
+      const MAX_TEXT_WIDTH = WIDTH - PADDING * 2;
+
+      // Truncate overly long titles and uppercase for impact
+      const displayTitle = (title.length > 80 ? title.slice(0, 77) + '...' : title).toUpperCase();
+
+      // Choose font size: shrink for longer titles
+      const fontSize = displayTitle.length > 40 ? 64 : displayTitle.length > 25 ? 76 : 90;
+      const lineHeight = Math.round(fontSize * 1.2);
+
+      // Rough word-wrap: split into lines that fit MAX_TEXT_WIDTH
+      const words = displayTitle.split(/\s+/);
+      const lines = [];
+      let currentLine = '';
+      const charsPerLine = Math.floor(MAX_TEXT_WIDTH / (fontSize * 0.52));
+
+      for (const word of words) {
+        const candidate = currentLine ? `${currentLine} ${word}` : word;
+        if (candidate.length > charsPerLine && currentLine) {
+          lines.push(currentLine);
+          currentLine = word;
+        } else {
+          currentLine = candidate;
+        }
+      }
+      if (currentLine) lines.push(currentLine);
+
+      // Position text block in the lower-center area
+      const textBlockHeight = lines.length * lineHeight;
+      const startY = HEIGHT - textBlockHeight - PADDING - 40;
+
+      const textElements = lines.map((line, i) => {
+        const y = startY + i * lineHeight + fontSize;
+        // White text with black stroke for readability on any background
+        return [
+          `<text x="${WIDTH / 2}" y="${y}" text-anchor="middle"`,
+          `  font-family="Arial Black, Impact, Helvetica, sans-serif"`,
+          `  font-size="${fontSize}" font-weight="900"`,
+          `  stroke="#000000" stroke-width="6" fill="#000000"`,
+          `  paint-order="stroke">${this._escapeXml(line)}</text>`,
+          `<text x="${WIDTH / 2}" y="${y}" text-anchor="middle"`,
+          `  font-family="Arial Black, Impact, Helvetica, sans-serif"`,
+          `  font-size="${fontSize}" font-weight="900"`,
+          `  fill="#FFFFFF">${this._escapeXml(line)}</text>`,
+        ].join('\n');
+      }).join('\n');
+
+      // Semi-transparent gradient bar behind text for extra contrast
+      const gradientTop = startY - 20;
+      const gradientHeight = textBlockHeight + PADDING + 60;
+
+      const svgOverlay = Buffer.from(`
+        <svg width="${WIDTH}" height="${HEIGHT}" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stop-color="#000000" stop-opacity="0"/>
+              <stop offset="40%" stop-color="#000000" stop-opacity="0.6"/>
+              <stop offset="100%" stop-color="#000000" stop-opacity="0.8"/>
+            </linearGradient>
+          </defs>
+          <rect x="0" y="${gradientTop}" width="${WIDTH}" height="${gradientHeight}" fill="url(#bg)"/>
+          ${textElements}
+        </svg>
+      `);
+
+      const outputPath = imagePath.replace(/\.png$/, '_final.png');
+      await sharp(imagePath)
+        .composite([{ input: svgOverlay, top: 0, left: 0 }])
+        .png()
+        .toFile(outputPath);
+
+      this.logger.info('Text overlay applied to thumbnail');
+      return outputPath;
+    } catch (error) {
+      this.logger.warn('Text overlay failed, using raw thumbnail:', error.message);
+      return imagePath;
+    }
+  }
+
+  _escapeXml(str) {
+    return str
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&apos;');
   }
 
   async getFileSize(filePath) {
