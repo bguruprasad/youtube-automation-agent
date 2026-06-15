@@ -14,6 +14,14 @@ class CredentialManager {
     this.tokens = {};
   }
 
+  // Allow agents to access credentials like credentialManager.openai
+  get openai() { return this.credentials.openai; }
+  get youtube() { return this.credentials.youtube; }
+  get channel() { return this.credentials.channel; }
+  get content() { return this.credentials.content; }
+  get gemini() { return this.credentials.gemini; }
+  get azureSpeech() { return this.credentials.azureSpeech; }
+
   async initialize() {
     try {
       await this.loadCredentials();
@@ -378,8 +386,10 @@ class CredentialManager {
       // Files might not exist yet
     }
 
-    const requiredCredentials = ['youtube', 'openai'];
+    const requiredCredentials = ['openai'];
+    const optionalCredentials = ['youtube'];
     const missing = [];
+    const missingOptional = [];
 
     for (const service of requiredCredentials) {
       if (!this.credentials[service]) {
@@ -387,15 +397,32 @@ class CredentialManager {
       }
     }
 
+    for (const service of optionalCredentials) {
+      if (!this.credentials[service]) {
+        missingOptional.push(service);
+      }
+    }
+
     if (missing.length > 0) {
-      console.log(chalk.yellow(`\n⚠️  Missing credentials for: ${missing.join(', ')}`));
+      console.log(chalk.yellow(`\n⚠️  Missing required credentials for: ${missing.join(', ')}`));
       return false;
     }
 
-    // Validate YouTube tokens
-    if (!this.tokens.youtube) {
-      console.log(chalk.yellow('\n⚠️  YouTube authentication required'));
-      return false;
+    if (missingOptional.length > 0) {
+      console.log(chalk.yellow(`\n⚠️  Missing optional credentials for: ${missingOptional.join(', ')} (publishing disabled)`));
+    }
+
+    // Check for OpenAI key in env as fallback
+    if (!this.credentials.openai && process.env.OPENAI_API_KEY) {
+      this.credentials.openai = {
+        apiKey: process.env.OPENAI_API_KEY,
+        model: 'gpt-4-turbo-preview'
+      };
+    }
+
+    // Validate YouTube tokens (optional - only needed for publishing)
+    if (this.credentials.youtube && !this.tokens.youtube) {
+      console.log(chalk.yellow('\n⚠️  YouTube authentication required for publishing'));
     }
 
     return true;

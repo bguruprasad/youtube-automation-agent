@@ -56,7 +56,13 @@ class ContentStrategyAgent {
 
   async fetchYouTubeTrends() {
     // Use YouTube API to fetch trending videos
-    const youtube = this.credentials.getYouTubeClient();
+    let youtube;
+    try {
+      youtube = this.credentials.getYouTubeClient();
+    } catch (error) {
+      this.logger.warn('YouTube API not configured - using fallback trends');
+      return [];
+    }
     
     try {
       const response = await youtube.videos.list({
@@ -104,7 +110,12 @@ class ContentStrategyAgent {
   }
 
   async getChannelVideos(channelId) {
-    const youtube = this.credentials.getYouTubeClient();
+    let youtube;
+    try {
+      youtube = this.credentials.getYouTubeClient();
+    } catch (error) {
+      return [];
+    }
     
     try {
       const response = await youtube.search.list({

@@ -26,8 +26,8 @@ class PublishingSchedulingAgent {
       this.youtube = google.youtube({ version: 'v3', auth });
       this.logger.info('YouTube API initialized');
     } catch (error) {
-      this.logger.error('Failed to initialize YouTube API:', error);
-      throw error;
+      this.logger.warn('YouTube API not configured - publishing disabled');
+      this.youtube = null;
     }
   }
 

@@ -25,8 +25,9 @@ class AnalyticsOptimizationAgent {
       this.youtube = google.youtube({ version: 'v3', auth });
       this.logger.info('YouTube Analytics API initialized');
     } catch (error) {
-      this.logger.error('Failed to initialize Analytics API:', error);
-      throw error;
+      this.logger.warn('YouTube Analytics API not configured - analytics disabled');
+      this.youtubeAnalytics = null;
+      this.youtube = null;
     }
   }
 

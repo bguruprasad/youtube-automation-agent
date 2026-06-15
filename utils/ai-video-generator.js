@@ -101,17 +101,69 @@ class AIVideoGenerator {
     });
   }
 
-  async generateOpenAITTS(text, outputPath) {
-    const response = await this.openai.audio.speech.create({
-      model: "tts-1-hd",
-      voice: "nova",
-      input: text,
-      speed: 1.0
-    });
+  // Split text into chunks at sentence boundaries, respecting maxLen
+  chunkText(text, maxLen = 4096) {
+    if (text.length <= maxLen) return [text];
+    const chunks = [];
+    let remaining = text;
+    while (remaining.length > 0) {
+      if (remaining.length <= maxLen) {
+        chunks.push(remaining);
+        break;
+      }
+      // Find last sentence boundary within maxLen
+      let cut = remaining.lastIndexOf('. ', maxLen);
+      if (cut === -1 || cut < maxLen * 0.3) cut = remaining.lastIndexOf(' ', maxLen);
+      if (cut === -1) cut = maxLen;
+      else cut += 1; // include the space/period
+      chunks.push(remaining.slice(0, cut).trim());
+      remaining = remaining.slice(cut).trim();
+    }
+    return chunks;
+  }
 
-    const buffer = Buffer.from(await response.arrayBuffer());
-    await fs.writeFile(outputPath, buffer);
-    
+  async generateOpenAITTS(text, outputPath) {
+    const chunks = this.chunkText(text, 4096);
+    this.logger.info(`TTS: processing ${chunks.length} chunk(s) (${text.length} chars total)`);
+
+    if (chunks.length === 1) {
+      const response = await this.openai.audio.speech.create({
+        model: "tts-1-hd",
+        voice: "nova",
+        input: chunks[0],
+        speed: 1.0
+      });
+      const buffer = Buffer.from(await response.arrayBuffer());
+      await fs.writeFile(outputPath, buffer);
+    } else {
+      // Generate each chunk, then concatenate with ffmpeg
+      const chunkPaths = [];
+      for (let i = 0; i < chunks.length; i++) {
+        const chunkPath = outputPath.replace(/(\.\w+)$/, `_chunk${i}$1`);
+        const response = await this.openai.audio.speech.create({
+          model: "tts-1-hd",
+          voice: "nova",
+          input: chunks[i],
+          speed: 1.0
+        });
+        const buffer = Buffer.from(await response.arrayBuffer());
+        await fs.writeFile(chunkPath, buffer);
+        chunkPaths.push(chunkPath);
+      }
+
+      // Concatenate with ffmpeg
+      const listFile = outputPath.replace(/(\.\w+)$/, '_list.txt');
+      const listContent = chunkPaths.map(p => `file '${p}'`).join('\n');
+      await fs.writeFile(listFile, listContent);
+
+      const { execSync } = require('child_process');
+      execSync(`ffmpeg -y -f concat -safe 0 -i "${listFile}" -c copy "${outputPath}"`, { stdio: 'pipe' });
+
+      // Cleanup temp files
+      for (const p of chunkPaths) { try { await fs.unlink(p); } catch {} }
+      try { await fs.unlink(listFile); } catch {}
+    }
+
     this.logger.info('OpenAI TTS generation complete');
     return outputPath;
   }
@@ -126,23 +178,28 @@ class AIVideoGenerator {
 
       const enhancedPrompt = this.enhanceVisualPrompt(prompt, style);
       
-      // Use DALL-E 3 for high-quality images
-      const response = await this.openai.images.generate({
-        model: "dall-e-3",
+      // Use gpt-image-1 (current OpenAI image model)
+      const params = {
+        model: "gpt-image-1-mini",
         prompt: enhancedPrompt,
-        n: count,
-        size: "1792x1024", // 16:9 aspect ratio for video
-        quality: "hd",
-        style: "natural"
-      });
+        n: 1,
+        size: "1536x1024", // landscape for video
+        quality: "medium"
+      };
+      const response = await this.openai.images.generate(params);
 
-      const imageUrls = response.data.map(img => img.url);
       const localPaths = [];
 
-      // Download images locally
-      for (let i = 0; i < imageUrls.length; i++) {
+      // Save images locally (handle both url and b64_json responses)
+      for (let i = 0; i < response.data.length; i++) {
         const imagePath = path.join(__dirname, '..', 'data', 'assets', `visual_${Date.now()}_${i}.png`);
-        await this.downloadImage(imageUrls[i], imagePath);
+        await fs.mkdir(path.dirname(imagePath), { recursive: true });
+        const img = response.data[i];
+        if (img.b64_json) {
+          await fs.writeFile(imagePath, Buffer.from(img.b64_json, 'base64'));
+        } else if (img.url) {
+          await this.downloadImage(img.url, imagePath);
+        }
         localPaths.push(imagePath);
       }
 
@@ -229,61 +286,58 @@ class AIVideoGenerator {
   }
 
   async generateSlideshowVideo(script, visualAssets, audioPath, outputPath) {
-    this.logger.info('Creating slideshow video...');
-    
-    const { chromium } = require('playwright');
-    const browser = await chromium.launch();
-    const page = await browser.newPage();
+    this.logger.info('Creating slideshow video with ffmpeg...');
 
-    // Create HTML for slideshow
-    const slideshowHtml = this.createSlideshowHTML(script, visualAssets);
-    
-    // Set page content
-    await page.setContent(slideshowHtml);
-    await page.setViewportSize({ width: 1920, height: 1080 });
-
-    // Record video of the slideshow
-    const videoPath = outputPath.replace('.mp4', '_visual.mp4');
-    
-    // Use Playwright to record
-    await page.waitForTimeout(1000); // Wait for assets to load
-    
-    // Create video frames by taking screenshots at intervals
     const duration = this.calculateScriptDuration(script);
-    const frameCount = Math.ceil(duration * 30); // 30 FPS
-    const frameInterval = duration / frameCount * 1000;
+    const { execSync } = require('child_process');
 
-    const framesDir = path.join(path.dirname(outputPath), 'frames');
-    await fs.mkdir(framesDir, { recursive: true });
+    // Filter to actual image files that exist
+    const fsSync = require('fs');
+    const validAssets = visualAssets.filter(a => {
+      try { return fsSync.existsSync(a) && fsSync.statSync(a).size > 100; } catch { return false; }
+    });
 
-    for (let i = 0; i < frameCount; i++) {
-      await page.screenshot({
-        path: path.join(framesDir, `frame_${String(i).padStart(6, '0')}.png`),
-        fullPage: true
-      });
+    const videoPath = outputPath.replace('.mp4', '_visual.mp4');
+
+    if (validAssets.length === 0) {
+      // No real images -- generate a simple color-bar placeholder video
+      this.logger.warn('No valid visual assets, generating placeholder video');
+      const cmd = `ffmpeg -y -f lavfi -i "color=c=0x1a1a2e:s=1920x1080:d=${duration}" ` +
+        `-vf "drawtext=text='${(script.title || 'Video').replace(/'/g, "\\'")}':fontsize=60:fontcolor=white:x=(w-text_w)/2:y=(h-text_h)/2" ` +
+        `-c:v libx264 -pix_fmt yuv420p "${videoPath}"`;
+      execSync(cmd, { stdio: 'pipe', timeout: 60000 });
+    } else {
+      // Create slideshow from images using ffmpeg
+      const perImage = Math.max(2, Math.floor(duration / validAssets.length));
       
-      // Advance animation
-      await page.evaluate(() => {
-        if (window.advanceAnimation) {
-          window.advanceAnimation();
-        }
-      });
-      
-      await page.waitForTimeout(frameInterval);
+      // Build ffmpeg concat input file
+      const listFile = outputPath.replace('.mp4', '_imglist.txt');
+      const listContent = validAssets.map(p => `file '${p}'\nduration ${perImage}`).join('\n') +
+        `\nfile '${validAssets[validAssets.length - 1]}'`; // last image repeated for ffmpeg concat
+      await fs.writeFile(listFile, listContent);
+
+      const cmd = `ffmpeg -y -f concat -safe 0 -i "${listFile}" ` +
+        `-vf "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:color=black,fps=30" ` +
+        `-c:v libx264 -pix_fmt yuv420p -t ${duration} "${videoPath}"`;
+      execSync(cmd, { stdio: 'pipe', timeout: 120000 });
+
+      try { await fs.unlink(listFile); } catch {}
     }
 
-    await browser.close();
+    // Add audio if available
+    if (audioPath) {
+      try {
+        const fsSync2 = require('fs');
+        if (fsSync2.existsSync(audioPath) && fsSync2.statSync(audioPath).size > 100) {
+          await this.addAudioToVideo(videoPath, audioPath, outputPath);
+          try { await fs.unlink(videoPath); } catch {} // cleanup intermediate
+          return outputPath;
+        }
+      } catch {}
+    }
 
-    // Convert frames to video using FFmpeg
-    const ffmpegCommand = `ffmpeg -framerate 30 -i "${framesDir}/frame_%06d.png" -c:v libx264 -pix_fmt yuv420p "${videoPath}"`;
-    await execAsync(ffmpegCommand);
-
-    // Add audio
-    await this.addAudioToVideo(videoPath, audioPath, outputPath);
-
-    // Cleanup frames
-    await this.cleanupDirectory(framesDir);
-
+    // No audio -- just rename visual to output
+    await fs.rename(videoPath, outputPath);
     return outputPath;
   }
 
@@ -552,17 +606,22 @@ class AIVideoGenerator {
       const prompt = `YouTube thumbnail for "${script.title}", ${style} style, eye-catching, high contrast text, professional design, clickable, engaging`;
       
       const response = await this.openai.images.generate({
-        model: "dall-e-3",
+        model: "gpt-image-1-mini",
         prompt: prompt,
         n: 1,
-        size: "1792x1024",
-        quality: "hd"
+        size: "1536x1024",
+        quality: "medium"
       });
 
       const thumbnailPath = path.join(__dirname, '..', 'uploads', 'thumbnails', `thumbnail_${Date.now()}.png`);
       await fs.mkdir(path.dirname(thumbnailPath), { recursive: true });
       
-      await this.downloadImage(response.data[0].url, thumbnailPath);
+      const imgData = response.data[0];
+      if (imgData.b64_json) {
+        await fs.writeFile(thumbnailPath, Buffer.from(imgData.b64_json, 'base64'));
+      } else if (imgData.url) {
+        await this.downloadImage(imgData.url, thumbnailPath);
+      }
       
       return {
         path: thumbnailPath,

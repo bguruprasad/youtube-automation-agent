@@ -324,7 +324,7 @@ class Database {
   // Production methods
   async saveProductionData(production) {
     await this.executeQuery(
-      `INSERT INTO productions (
+      `INSERT OR REPLACE INTO productions (
         id, status, assets, timeline, scheduled_publish_time, 
         priority, estimated_duration
       ) VALUES (?, ?, ?, ?, ?, ?, ?)`,

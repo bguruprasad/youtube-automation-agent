@@ -79,3 +79,13 @@ backup/
 # Cache
 .cache/
 *.cache
+
+# Generated content data
+data/assets/
+data/audio/
+data/captions/
+data/scripts/
+data/videos/
+
+# Session notes
+jcode.md
