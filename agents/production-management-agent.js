@@ -53,19 +53,25 @@ class ProductionManagementAgent {
       // Create production entry
       const productionId = this.generateProductionId();
       
+      // Create organized output directory
+      const { outputDir, assetsDir, dirName } = await this.createOutputDir(productionId, script.title);
+      this.logger.info(`Output directory: output/${dirName}`);
+      
       const productionData = {
         id: productionId,
+        outputDir,
+        assetsDir,
         strategy,
         script,
         thumbnail,
         seo,
         status: 'processing',
         assets: {
-          script: await this.processScript(script),
-          thumbnail: await this.processThumbnail(thumbnail),
-          audio: null, // Will be generated later
-          video: null, // Will be generated later
-          captions: null // Will be generated later
+          script: await this.processScript(script, outputDir),
+          thumbnail: await this.processThumbnail(thumbnail, outputDir),
+          audio: null,
+          video: null,
+          captions: null
         },
         timeline: {
           created: new Date().toISOString(),
@@ -121,22 +127,38 @@ class ProductionManagementAgent {
     return `prod_${timestamp}_${random}_${extra}`;
   }
 
-  async processScript(script) {
-    const scriptPath = path.join(__dirname, '..', 'data', 'scripts', `${Date.now()}_script.json`);
+  /**
+   * Create a clean output directory for this production run.
+   * Structure: output/<date>_<slug>/
+   */
+  async createOutputDir(productionId, title) {
+    const date = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+    const slug = (title || 'untitled')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '')
+      .slice(0, 50);
+    const dirName = `${date}_${slug}`;
+    const outputDir = path.join(__dirname, '..', 'output', dirName);
+    const assetsDir = path.join(outputDir, 'assets');
+    await fs.mkdir(assetsDir, { recursive: true });
+    return { outputDir, assetsDir, dirName };
+  }
+
+  async processScript(script, outputDir) {
+    const scriptPath = path.join(outputDir || path.join(__dirname, '..', 'data', 'scripts'), 'script.json');
+    const ttsPath = path.join(path.dirname(scriptPath), 'script_tts.txt');
     
     // Create formatted script for TTS
     const ttsScript = this.formatScriptForTTS(script);
     
     // Save script files
     await fs.writeFile(scriptPath, JSON.stringify(script, null, 2));
-    await fs.writeFile(
-      scriptPath.replace('.json', '_tts.txt'), 
-      ttsScript
-    );
+    await fs.writeFile(ttsPath, ttsScript);
     
     return {
       originalPath: scriptPath,
-      ttsPath: scriptPath.replace('.json', '_tts.txt'),
+      ttsPath: ttsPath,
       duration: script.duration,
       sections: script.mainContent.sections.length
     };
@@ -206,11 +228,20 @@ class ProductionManagementAgent {
     return ttsText;
   }
 
-  async processThumbnail(thumbnail) {
+  async processThumbnail(thumbnail, outputDir) {
     try {
       // Try to generate AI thumbnail first
       const script = thumbnail.script || { title: 'Ethereal Dreamscript Video' };
       const aiThumbnail = await this.aiVideoGenerator.generateThumbnail(script, 'ethereal');
+      
+      // Copy to output directory
+      if (outputDir && aiThumbnail.path) {
+        const destPath = path.join(outputDir, 'thumbnail.png');
+        try {
+          await fs.copyFile(aiThumbnail.path, destPath);
+          aiThumbnail.path = destPath;
+        } catch {}
+      }
       
       return {
         path: aiThumbnail.path,
@@ -224,8 +255,8 @@ class ProductionManagementAgent {
       
       // Fallback to original processing
       const productionThumbnailPath = path.join(
-        __dirname, '..', 'data', 'assets', 
-        `thumbnail_${Date.now()}.jpg`
+        outputDir || path.join(__dirname, '..', 'data', 'assets'),
+        'thumbnail.jpg'
       );
       
       if (thumbnail.path && await fs.access(thumbnail.path).then(() => true).catch(() => false)) {
@@ -294,6 +325,22 @@ class ProductionManagementAgent {
       for (const prompt of visualPrompts) {
         const assets = await this.aiVideoGenerator.generateVisualAssets(prompt, 'ethereal', 1);
         visualAssets.push(...assets);
+      }
+      
+      // Copy visual assets to output directory
+      if (productionData.assetsDir) {
+        const copiedAssets = [];
+        for (let i = 0; i < visualAssets.length; i++) {
+          const src = visualAssets[i];
+          const dest = path.join(productionData.assetsDir, `visual_${i + 1}.png`);
+          try {
+            await fs.copyFile(src, dest);
+            copiedAssets.push(dest);
+          } catch {
+            copiedAssets.push(src); // keep original path if copy fails
+          }
+        }
+        visualAssets.splice(0, visualAssets.length, ...copiedAssets);
       }
       
       productionData.assets.video = {
@@ -408,7 +455,7 @@ class ProductionManagementAgent {
     
     try {
       const { script } = productionData;
-      const audioPath = path.join(__dirname, '..', 'data', 'audio', `${productionData.id}_narration.mp3`);
+      const audioPath = path.join(productionData.outputDir || path.join(__dirname, '..', 'data', 'audio'), 'narration.mp3');
       
       // Read the TTS script
       const ttsText = await fs.readFile(productionData.assets.script.ttsPath, 'utf8');
@@ -449,7 +496,7 @@ class ProductionManagementAgent {
   async generateCaptions(productionData) {
     this.logger.info('Generating captions...');
     
-    const captionsPath = path.join(__dirname, '..', 'data', 'captions', `${productionData.id}_captions.srt`);
+    const captionsPath = path.join(productionData.outputDir || path.join(__dirname, '..', 'data', 'captions'), 'captions.srt');
     
     // Generate SRT captions based on script timing
     const captions = await this.createSRTCaptions(productionData);
@@ -559,7 +606,7 @@ class ProductionManagementAgent {
     this.logger.info('Assembling final AI-generated video...');
     
     try {
-      const finalVideoPath = path.join(__dirname, '..', 'data', 'videos', `${productionData.id}_final.mp4`);
+      const finalVideoPath = path.join(productionData.outputDir || path.join(__dirname, '..', 'data', 'videos'), 'video.mp4');
       
       // Use AI Video Generator to create the final video
       await this.aiVideoGenerator.generateVideo(
@@ -663,7 +710,7 @@ class ProductionManagementAgent {
 
   // Fallback simulation methods
   async simulateAudioGeneration(productionData) {
-    const audioPath = path.join(__dirname, '..', 'data', 'audio', `${productionData.id}_narration.mp3`);
+    const audioPath = path.join(productionData.outputDir || path.join(__dirname, '..', 'data', 'audio'), 'narration.mp3');
     
     await fs.writeFile(audioPath + '.info', JSON.stringify({
       message: 'AI TTS audio would be generated here',
@@ -681,7 +728,7 @@ class ProductionManagementAgent {
   }
 
   async simulateVideoAssembly(productionData) {
-    const finalVideoPath = path.join(__dirname, '..', 'data', 'videos', `${productionData.id}_final.mp4`);
+    const finalVideoPath = path.join(productionData.outputDir || path.join(__dirname, '..', 'data', 'videos'), 'video.mp4');
     
     const assemblyInstructions = {
       message: 'AI video would be assembled here',

@@ -86,6 +86,7 @@ data/audio/
 data/captions/
 data/scripts/
 data/videos/
+output/
 
 # Session notes
 jcode.md
