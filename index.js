@@ -86,11 +86,22 @@ class YouTubeAutomationAgent {
 
   setupAPI() {
     this.app.use(express.json());
-    this.app.use(express.static(path.join(__dirname, 'dashboard')));
+    this.app.use(express.static(path.join(__dirname, 'public')));
     
     // Main dashboard route
     this.app.get('/', (req, res) => {
-      res.sendFile(path.join(__dirname, 'dashboard', 'index.html'));
+      res.sendFile(path.join(__dirname, 'public', 'index.html'));
+    });
+
+    // Serve output files (thumbnails, videos, etc.)
+    this.app.get('/output/:folder/:file', (req, res) => {
+      const { folder, file } = req.params;
+      const filePath = path.join(__dirname, 'output', folder, file);
+      res.sendFile(filePath, (err) => {
+        if (err) {
+          res.status(404).json({ error: 'File not found' });
+        }
+      });
     });
     
     // Health check

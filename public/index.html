@@ -1,0 +1,566 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>YouTube Automation Agent</title>
+  <style>
+    :root {
+      --bg: #0f1117;
+      --surface: #1a1d27;
+      --surface-2: #232733;
+      --border: #2e3345;
+      --text: #e4e6ed;
+      --text-dim: #8b90a0;
+      --accent: #6c7aed;
+      --accent-hover: #8590f5;
+      --green: #34d399;
+      --red: #f87171;
+      --yellow: #fbbf24;
+      --radius: 10px;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      line-height: 1.5;
+    }
+
+    /* Layout */
+    .app {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 24px 20px 60px;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 32px;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+
+    header h1 {
+      font-size: 1.5rem;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    #status-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.85rem;
+      color: var(--text-dim);
+      background: var(--surface);
+      padding: 8px 14px;
+      border-radius: 20px;
+      border: 1px solid var(--border);
+    }
+
+    #status-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: var(--text-dim);
+    }
+    #status-dot.healthy { background: var(--green); }
+    #status-dot.error { background: var(--red); }
+
+    /* Sections */
+    .section {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 24px;
+      margin-bottom: 24px;
+    }
+
+    .section-title {
+      font-size: 1.05rem;
+      font-weight: 600;
+      margin-bottom: 16px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    /* Inputs & Buttons */
+    input[type="text"] {
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      padding: 10px 14px;
+      font-size: 0.9rem;
+      outline: none;
+      transition: border-color 0.2s;
+      width: 100%;
+    }
+    input[type="text"]:focus { border-color: var(--accent); }
+    input[type="text"]::placeholder { color: var(--text-dim); }
+
+    .btn {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      padding: 10px 18px;
+      font-size: 0.875rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background 0.2s, opacity 0.2s;
+      white-space: nowrap;
+    }
+    .btn:hover { background: var(--accent-hover); }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .btn-sm {
+      padding: 6px 12px;
+      font-size: 0.8rem;
+    }
+
+    .btn-outline {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--text);
+    }
+    .btn-outline:hover { border-color: var(--accent); color: var(--accent); background: transparent; }
+
+    .btn-green { background: #059669; }
+    .btn-green:hover { background: #047857; }
+
+    /* Form rows */
+    .form-row {
+      display: flex;
+      gap: 10px;
+      align-items: stretch;
+    }
+    .form-row input { flex: 1; }
+
+    /* Suggestion Cards */
+    .suggestions-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+      gap: 14px;
+      margin-top: 14px;
+    }
+
+    .suggestion-card {
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+      transition: border-color 0.2s;
+    }
+    .suggestion-card:hover { border-color: var(--accent); }
+
+    .suggestion-card h4 {
+      font-size: 0.95rem;
+      margin-bottom: 6px;
+      color: var(--text);
+    }
+
+    .suggestion-card .topic-label {
+      font-size: 0.78rem;
+      color: var(--accent);
+      margin-bottom: 8px;
+      font-weight: 500;
+    }
+
+    .suggestion-card p {
+      font-size: 0.83rem;
+      color: var(--text-dim);
+      margin-bottom: 10px;
+    }
+
+    .suggestion-meta {
+      display: flex;
+      gap: 14px;
+      font-size: 0.78rem;
+      color: var(--text-dim);
+      margin-bottom: 12px;
+    }
+
+    .suggestion-meta span {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .difficulty {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 10px;
+      font-size: 0.72rem;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+    .difficulty.easy { background: rgba(52, 211, 153, 0.15); color: var(--green); }
+    .difficulty.medium { background: rgba(251, 191, 36, 0.15); color: var(--yellow); }
+    .difficulty.hard { background: rgba(248, 113, 113, 0.15); color: var(--red); }
+
+    /* Generate section */
+    #generate-result {
+      margin-top: 16px;
+    }
+
+    .result-box {
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+    }
+
+    .result-box.success { border-color: var(--green); }
+    .result-box.error { border-color: var(--red); }
+
+    /* Spinner */
+    .spinner-wrap {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      color: var(--text-dim);
+      font-size: 0.9rem;
+    }
+
+    .spinner {
+      width: 20px; height: 20px;
+      border: 2px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* Outputs */
+    .outputs-list {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .output-item {
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+
+    .output-info { flex: 1; min-width: 200px; }
+
+    .output-info h4 {
+      font-size: 0.92rem;
+      margin-bottom: 4px;
+    }
+
+    .output-info .folder-name {
+      font-size: 0.78rem;
+      color: var(--text-dim);
+      font-family: 'SF Mono', 'Fira Code', monospace;
+    }
+
+    .output-files {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .file-badge {
+      font-size: 0.72rem;
+      padding: 3px 8px;
+      border-radius: 4px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--text-dim);
+      text-decoration: none;
+      transition: color 0.2s, border-color 0.2s;
+    }
+    a.file-badge:hover { color: var(--accent); border-color: var(--accent); }
+
+    .file-badge.exists { color: var(--green); border-color: rgba(52, 211, 153, 0.3); }
+
+    /* Empty states */
+    .empty-state {
+      text-align: center;
+      color: var(--text-dim);
+      padding: 32px 16px;
+      font-size: 0.9rem;
+    }
+
+    /* Responsive */
+    @media (max-width: 640px) {
+      .app { padding: 16px 12px 48px; }
+      header h1 { font-size: 1.2rem; }
+      .section { padding: 16px; }
+      .form-row { flex-direction: column; }
+      .suggestions-grid { grid-template-columns: 1fr; }
+      .output-item { flex-direction: column; align-items: flex-start; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <h1>🎬 YouTube Automation Agent</h1>
+      <div id="status-bar">
+        <span id="status-dot"></span>
+        <span id="status-text">Connecting...</span>
+      </div>
+    </header>
+
+    <!-- Topic Suggestions -->
+    <div class="section">
+      <div class="section-title">💡 Topic Suggestions</div>
+      <div class="form-row">
+        <input type="text" id="niche-input" placeholder="Enter a niche (e.g. productivity, AI, cooking)..." />
+        <button class="btn" id="suggest-btn" onclick="getSuggestions()">Get Suggestions</button>
+      </div>
+      <div id="suggestions-container"></div>
+    </div>
+
+    <!-- Generate -->
+    <div class="section">
+      <div class="section-title">🎬 Generate Video</div>
+      <div class="form-row">
+        <input type="text" id="topic-input" placeholder="Enter a topic for video generation..." />
+        <button class="btn btn-green" id="generate-btn" onclick="generateVideo()">Generate</button>
+      </div>
+      <div id="generate-result"></div>
+    </div>
+
+    <!-- Generated Content -->
+    <div class="section">
+      <div class="section-title" style="justify-content:space-between;">
+        <span>📂 Generated Content</span>
+        <button class="btn btn-sm btn-outline" onclick="loadOutputs()">Refresh</button>
+      </div>
+      <div id="outputs-container">
+        <div class="empty-state">Loading outputs...</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // --- Status ---
+    async function checkHealth() {
+      try {
+        const res = await fetch('/health');
+        const data = await res.json();
+        const dot = document.getElementById('status-dot');
+        const txt = document.getElementById('status-text');
+        if (data.status === 'healthy') {
+          dot.className = 'healthy';
+          txt.textContent = `Healthy - ${data.agents?.length || 0} agents active`;
+        } else {
+          dot.className = 'error';
+          txt.textContent = 'Unhealthy';
+        }
+      } catch {
+        document.getElementById('status-dot').className = 'error';
+        document.getElementById('status-text').textContent = 'Cannot reach server';
+      }
+    }
+
+    // --- Suggestions ---
+    async function getSuggestions() {
+      const niche = document.getElementById('niche-input').value.trim();
+      const btn = document.getElementById('suggest-btn');
+      const container = document.getElementById('suggestions-container');
+
+      btn.disabled = true;
+      btn.textContent = 'Loading...';
+      container.innerHTML = '<div class="spinner-wrap" style="margin-top:14px"><div class="spinner"></div><span>Fetching suggestions...</span></div>';
+
+      try {
+        const params = new URLSearchParams({ count: '5' });
+        if (niche) params.set('niche', niche);
+        const res = await fetch('/suggest?' + params);
+        const data = await res.json();
+
+        if (!data.success || !data.suggestions?.length) {
+          container.innerHTML = '<div class="empty-state">No suggestions returned. Try a different niche.</div>';
+          return;
+        }
+
+        container.innerHTML = '<div class="suggestions-grid">' + data.suggestions.map(s => {
+          const diff = (s.difficulty || 'medium').toLowerCase();
+          const views = s.estimatedViews ? Number(s.estimatedViews).toLocaleString() : '-';
+          return `
+            <div class="suggestion-card">
+              <div class="topic-label">${escHtml(s.topic || '')}</div>
+              <h4>${escHtml(s.title || s.topic || 'Untitled')}</h4>
+              <p>${escHtml(s.why || '')}</p>
+              <div class="suggestion-meta">
+                <span>👁 ${views} est. views</span>
+                <span><span class="difficulty ${diff}">${diff}</span></span>
+              </div>
+              <button class="btn btn-sm btn-green" onclick="generateFromSuggestion(${escAttr(JSON.stringify(s.topic || s.title || ''))})">Generate Video</button>
+            </div>
+          `;
+        }).join('') + '</div>';
+      } catch (err) {
+        container.innerHTML = `<div class="empty-state" style="color:var(--red)">Error: ${escHtml(err.message)}</div>`;
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Get Suggestions';
+      }
+    }
+
+    function generateFromSuggestion(topic) {
+      document.getElementById('topic-input').value = topic;
+      generateVideo();
+      // Scroll to generate section
+      document.getElementById('topic-input').scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+
+    // --- Generate ---
+    let isGenerating = false;
+
+    async function generateVideo() {
+      if (isGenerating) return;
+
+      const input = document.getElementById('topic-input');
+      const topic = input.value.trim();
+      const btn = document.getElementById('generate-btn');
+      const resultDiv = document.getElementById('generate-result');
+
+      if (!topic) {
+        input.focus();
+        return;
+      }
+
+      isGenerating = true;
+      btn.disabled = true;
+      btn.textContent = 'Generating...';
+
+      const startTime = Date.now();
+      resultDiv.innerHTML = `
+        <div class="spinner-wrap" style="margin-top:12px">
+          <div class="spinner"></div>
+          <span>Generating video for "<strong>${escHtml(topic)}</strong>"... This usually takes ~4 minutes.</span>
+        </div>
+        <div style="margin-top:8px;font-size:0.8rem;color:var(--text-dim)" id="gen-timer">Elapsed: 0s</div>
+      `;
+
+      const timerInterval = setInterval(() => {
+        const elapsed = Math.floor((Date.now() - startTime) / 1000);
+        const mins = Math.floor(elapsed / 60);
+        const secs = elapsed % 60;
+        const timerEl = document.getElementById('gen-timer');
+        if (timerEl) timerEl.textContent = `Elapsed: ${mins > 0 ? mins + 'm ' : ''}${secs}s`;
+      }, 1000);
+
+      try {
+        const res = await fetch('/generate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ topic })
+        });
+        const data = await res.json();
+        clearInterval(timerInterval);
+
+        if (data.success) {
+          const elapsed = Math.floor((Date.now() - startTime) / 1000);
+          resultDiv.innerHTML = `
+            <div class="result-box success">
+              <strong>✅ Video generated successfully!</strong><br>
+              <span style="color:var(--text-dim);font-size:0.85rem;">
+                Title: ${escHtml(data.result?.title || 'N/A')}<br>
+                Content ID: ${escHtml(data.result?.contentId || 'N/A')}<br>
+                Completed in ${Math.floor(elapsed / 60)}m ${elapsed % 60}s
+              </span>
+            </div>
+          `;
+          input.value = '';
+          // Refresh outputs list
+          setTimeout(loadOutputs, 1000);
+        } else {
+          resultDiv.innerHTML = `<div class="result-box error"><strong>❌ Generation failed</strong><br><span style="font-size:0.85rem;">${escHtml(data.error || 'Unknown error')}</span></div>`;
+        }
+      } catch (err) {
+        clearInterval(timerInterval);
+        resultDiv.innerHTML = `<div class="result-box error"><strong>❌ Request failed</strong><br><span style="font-size:0.85rem;">${escHtml(err.message)}</span></div>`;
+      } finally {
+        isGenerating = false;
+        btn.disabled = false;
+        btn.textContent = 'Generate';
+      }
+    }
+
+    // --- Outputs ---
+    async function loadOutputs() {
+      const container = document.getElementById('outputs-container');
+      try {
+        const res = await fetch('/outputs');
+        const data = await res.json();
+
+        if (!data.success || !data.outputs?.length) {
+          container.innerHTML = '<div class="empty-state">No generated content yet. Create your first video above!</div>';
+          return;
+        }
+
+        // Sort newest first (folder names are date-prefixed)
+        data.outputs.sort((a, b) => b.folder.localeCompare(a.folder));
+
+        container.innerHTML = '<div class="outputs-list">' + data.outputs.map(o => {
+          const fileLinks = o.files.map(f => {
+            const isKey = ['video.mp4', 'thumbnail.png', 'script.json', 'narration.mp3', 'captions.srt'].includes(f);
+            const ext = f.split('.').pop();
+            const viewable = ['mp4', 'png', 'jpg', 'jpeg', 'webp', 'mp3', 'json', 'txt', 'srt'].includes(ext);
+            const classes = 'file-badge' + (isKey ? ' exists' : '');
+            if (viewable) {
+              return `<a href="/output/${encodeURIComponent(o.folder)}/${encodeURIComponent(f)}" target="_blank" class="${classes}">${escHtml(f)}</a>`;
+            }
+            return `<span class="${classes}">${escHtml(f)}</span>`;
+          }).join('');
+
+          const indicators = [];
+          if (o.hasVideo) indicators.push('🎥');
+          if (o.hasThumbnail) indicators.push('🖼');
+
+          return `
+            <div class="output-item">
+              <div class="output-info">
+                <h4>${indicators.join(' ')} ${escHtml(o.title || o.folder)}</h4>
+                <div class="folder-name">${escHtml(o.folder)}</div>
+              </div>
+              <div class="output-files">${fileLinks}</div>
+            </div>
+          `;
+        }).join('') + '</div>';
+      } catch (err) {
+        container.innerHTML = `<div class="empty-state" style="color:var(--red)">Failed to load outputs: ${escHtml(err.message)}</div>`;
+      }
+    }
+
+    // --- Helpers ---
+    function escHtml(str) {
+      const d = document.createElement('div');
+      d.textContent = str;
+      return d.innerHTML;
+    }
+
+    function escAttr(str) {
+      return str.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;');
+    }
+
+    // --- Init ---
+    checkHealth();
+    loadOutputs();
+    setInterval(checkHealth, 30000);
+  </script>
+</body>
+</html>
