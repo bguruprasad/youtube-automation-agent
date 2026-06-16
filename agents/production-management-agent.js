@@ -68,7 +68,7 @@ class ProductionManagementAgent {
         status: 'processing',
         assets: {
           script: await this.processScript(script, outputDir),
-          thumbnail: await this.processThumbnail(thumbnail, outputDir),
+          thumbnail: await this.processThumbnail(thumbnail, outputDir, script),
           audio: null,
           video: null,
           captions: null
@@ -228,11 +228,11 @@ class ProductionManagementAgent {
     return ttsText;
   }
 
-  async processThumbnail(thumbnail, outputDir) {
+  async processThumbnail(thumbnail, outputDir, script) {
     try {
       // Try to generate AI thumbnail first
-      const script = thumbnail.script || { title: 'Ethereal Dreamscript Video' };
-      const aiThumbnail = await this.aiVideoGenerator.generateThumbnail(script, 'ethereal');
+      const thumbnailScript = script || thumbnail.script || { title: 'Untitled Video' };
+      const aiThumbnail = await this.aiVideoGenerator.generateThumbnail(thumbnailScript, 'ethereal');
       
       // Copy to output directory
       if (outputDir && aiThumbnail.path) {

@@ -446,7 +446,7 @@ class AIVideoGenerator {
         ${visualAssets[0] ? `<img class="background-image" src="${visualAssets[0]}" />` : ''}
         <div class="content">
             <h1>${script.title}</h1>
-            <p>Ethereal Dreamscript</p>
+            <p>${script.hook?.text || ''}</p>
         </div>
     </div>
     
