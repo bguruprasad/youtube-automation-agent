@@ -469,6 +469,60 @@ class ContentStrategyAgent {
     
     return multipliers[category] || 1.0;
   }
+
+  /**
+   * Suggest trending/high-potential video topics using AI.
+   * Works without YouTube API -- uses OpenAI's knowledge of trends.
+   */
+  async suggestTopics(niche = null, count = 5) {
+    if (!this.openai) {
+      // Fallback: return static suggestions
+      return this._staticSuggestions(niche, count);
+    }
+
+    const currentDate = new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+    const nicheContext = niche
+      ? `specifically in the "${niche}" niche`
+      : 'across popular YouTube categories (tech, productivity, self-improvement, finance, health)';
+
+    try {
+      const response = await this.openai.chat.completions.create({
+        model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+        messages: [
+          {
+            role: 'system',
+            content: `You are a YouTube content strategist. Suggest trending, high-potential video topics. Return a JSON array of objects with: topic, title (clickworthy video title), why (1-sentence reason it would perform well), estimatedViews (string like "50K-200K"), difficulty (easy/medium/hard). Only return the JSON array, no markdown.`
+          },
+          {
+            role: 'user',
+            content: `Suggest ${count} YouTube video topics that would perform well right now (${currentDate}), ${nicheContext}. Focus on topics with high search volume, trending interest, or evergreen appeal. Consider what's currently popular and what gaps exist.`
+          }
+        ],
+        temperature: 0.9,
+        max_tokens: 1500
+      });
+
+      const content = response.choices[0].message.content.trim();
+      // Parse JSON from response (handle markdown code blocks)
+      const jsonStr = content.replace(/^```json?\n?/i, '').replace(/\n?```$/i, '');
+      const suggestions = JSON.parse(jsonStr);
+      return suggestions.slice(0, count);
+    } catch (error) {
+      this.logger.error('AI topic suggestion failed:', error);
+      return this._staticSuggestions(niche, count);
+    }
+  }
+
+  _staticSuggestions(niche, count) {
+    const defaults = [
+      { topic: 'AI Tools', title: 'Top 10 AI Tools That Will Replace Your Job in 2026', why: 'AI is consistently trending', estimatedViews: '100K-500K', difficulty: 'easy' },
+      { topic: 'Productivity', title: '5 Morning Habits That Changed My Life', why: 'Evergreen self-improvement content', estimatedViews: '50K-200K', difficulty: 'easy' },
+      { topic: 'Money', title: 'How I Built 3 Income Streams Working From Home', why: 'Finance content has high CPM', estimatedViews: '100K-300K', difficulty: 'medium' },
+      { topic: 'Health', title: 'What Happens When You Walk 10,000 Steps Every Day for 30 Days', why: 'Challenge format drives engagement', estimatedViews: '200K-1M', difficulty: 'medium' },
+      { topic: 'Tech', title: 'Best Budget Tech Under $50 That Feels Premium', why: 'Product videos get consistent search traffic', estimatedViews: '50K-150K', difficulty: 'easy' },
+    ];
+    return defaults.slice(0, count);
+  }
 }
 
 module.exports = { ContentStrategyAgent };

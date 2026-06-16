@@ -114,6 +114,44 @@ class YouTubeAutomationAgent {
       }
     });
 
+    // Suggest trending topics before committing to generation
+    this.app.get('/suggest', async (req, res) => {
+      try {
+        const { niche, count } = req.query;
+        const suggestions = await this.agents.strategy.suggestTopics(niche || null, parseInt(count) || 5);
+        res.json({ success: true, suggestions });
+      } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+      }
+    });
+
+    // List previous generations
+    this.app.get('/outputs', async (req, res) => {
+      try {
+        const outputDir = path.join(__dirname, 'output');
+        const fs = require('fs').promises;
+        const dirs = await fs.readdir(outputDir).catch(() => []);
+        const outputs = [];
+        for (const dir of dirs) {
+          try {
+            const scriptPath = path.join(outputDir, dir, 'script.json');
+            const script = JSON.parse(await fs.readFile(scriptPath, 'utf8'));
+            const files = await fs.readdir(path.join(outputDir, dir));
+            outputs.push({
+              folder: dir,
+              title: script.title,
+              files: files.filter(f => !f.startsWith('.')),
+              hasVideo: files.includes('video.mp4'),
+              hasThumbnail: files.includes('thumbnail.png'),
+            });
+          } catch { /* skip invalid dirs */ }
+        }
+        res.json({ success: true, outputs });
+      } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+      }
+    });
+
     // Get analytics
     this.app.get('/analytics', async (req, res) => {
       try {
