@@ -327,17 +327,24 @@ class ProductionManagementAgent {
         visualAssets.push(...assets);
       }
       
-      // Copy visual assets to output directory
+      // Copy valid visual assets to output directory (skip simulated/failed ones)
       if (productionData.assetsDir) {
         const copiedAssets = [];
-        for (let i = 0; i < visualAssets.length; i++) {
-          const src = visualAssets[i];
-          const dest = path.join(productionData.assetsDir, `visual_${i + 1}.png`);
+        let idx = 1;
+        for (const src of visualAssets) {
           try {
+            const fsSync = require('fs');
+            const stat = fsSync.statSync(src);
+            // Skip tiny files (simulated placeholders are <1KB)
+            if (stat.size < 1000) continue;
+            // Skip non-image files
+            if (src.endsWith('.info') || src.endsWith('.json')) continue;
+            const dest = path.join(productionData.assetsDir, `visual_${idx}.png`);
             await fs.copyFile(src, dest);
             copiedAssets.push(dest);
+            idx++;
           } catch {
-            copiedAssets.push(src); // keep original path if copy fails
+            // skip files that don't exist or can't be copied
           }
         }
         visualAssets.splice(0, visualAssets.length, ...copiedAssets);

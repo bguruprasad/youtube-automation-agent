@@ -188,7 +188,7 @@ class AIVideoGenerator {
       
       // Use gpt-image-1 (current OpenAI image model)
       const params = {
-        model: "gpt-image-1-mini",
+        model: "gpt-image-1",
         prompt: enhancedPrompt,
         n: 1,
         size: "1536x1024", // landscape for video
@@ -295,59 +295,223 @@ class AIVideoGenerator {
   }
 
   async generateSlideshowVideo(script, visualAssets, audioPath, outputPath) {
-    this.logger.info('Creating slideshow video with ffmpeg...');
+    this.logger.info('Creating dynamic video with ffmpeg...');
 
     const duration = this.calculateScriptDuration(script);
     const { execSync } = require('child_process');
-
-    // Filter to actual image files that exist
     const fsSync = require('fs');
+
+    // Filter to actual image files
     const validAssets = visualAssets.filter(a => {
-      try { return fsSync.existsSync(a) && fsSync.statSync(a).size > 100; } catch { return false; }
+      try { return fsSync.existsSync(a) && fsSync.statSync(a).size > 1000; } catch { return false; }
     });
 
     const videoPath = outputPath.replace('.mp4', '_visual.mp4');
+    const tempDir = path.join(path.dirname(outputPath), '.tmp_video');
+    await fs.mkdir(tempDir, { recursive: true });
 
     if (validAssets.length === 0) {
-      // No real images -- generate a simple color-bar placeholder video
       this.logger.warn('No valid visual assets, generating placeholder video');
+      const safeTitle = (script.title || 'Video').replace(/'/g, "\\'").replace(/:/g, '\\:');
       const cmd = `ffmpeg -y -f lavfi -i "color=c=0x1a1a2e:s=1920x1080:d=${duration}" ` +
-        `-vf "drawtext=text='${(script.title || 'Video').replace(/'/g, "\\'")}':fontsize=60:fontcolor=white:x=(w-text_w)/2:y=(h-text_h)/2" ` +
+        `-vf "drawtext=text='${safeTitle}':fontsize=54:fontcolor=white:x=(w-text_w)/2:y=(h-text_h)/2:fontfile=/System/Library/Fonts/Helvetica.ttc" ` +
         `-c:v libx264 -pix_fmt yuv420p "${videoPath}"`;
       execSync(cmd, { stdio: 'pipe', timeout: 60000 });
     } else {
-      // Create slideshow from images using ffmpeg
-      const perImage = Math.max(2, Math.floor(duration / validAssets.length));
+      // Calculate per-section durations from script
+      const sectionDurations = this._getSectionDurations(script, duration, validAssets.length);
       
-      // Build ffmpeg concat input file
-      const listFile = outputPath.replace('.mp4', '_imglist.txt');
-      const listContent = validAssets.map(p => `file '${p}'\nduration ${perImage}`).join('\n') +
-        `\nfile '${validAssets[validAssets.length - 1]}'`; // last image repeated for ffmpeg concat
-      await fs.writeFile(listFile, listContent);
+      // Pick a random video style for variety
+      const videoStyle = this._pickVideoStyle();
+      this.logger.info(`Video style: ${videoStyle.name}`);
 
-      const cmd = `ffmpeg -y -f concat -safe 0 -i "${listFile}" ` +
-        `-vf "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:color=black,fps=30" ` +
-        `-c:v libx264 -pix_fmt yuv420p -t ${duration} "${videoPath}"`;
-      execSync(cmd, { stdio: 'pipe', timeout: 120000 });
+      // Generate individual clips with effects per section
+      const clipPaths = [];
+      for (let i = 0; i < validAssets.length; i++) {
+        const clipPath = path.join(tempDir, `clip_${i}.mp4`);
+        const clipDuration = sectionDurations[i] || Math.floor(duration / validAssets.length);
+        const sectionTitle = this._getSectionTitle(script, i);
+        
+        // Build per-clip filter with Ken Burns, text overlay, etc.
+        const filter = this._buildClipFilter(i, validAssets.length, clipDuration, sectionTitle, videoStyle);
+        
+        const cmd = `ffmpeg -y -loop 1 -i "${validAssets[i]}" -t ${clipDuration} ` +
+          `-vf "${filter}" -c:v libx264 -pix_fmt yuv420p -r 30 "${clipPath}"`;
+        try {
+          execSync(cmd, { stdio: 'pipe', timeout: 60000 });
+          clipPaths.push(clipPath);
+        } catch (e) {
+          this.logger.warn(`Clip ${i} generation failed, using simple scale`);
+          const fallback = `ffmpeg -y -loop 1 -i "${validAssets[i]}" -t ${clipDuration} ` +
+            `-vf "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=30" ` +
+            `-c:v libx264 -pix_fmt yuv420p "${clipPath}"`;
+          execSync(fallback, { stdio: 'pipe', timeout: 60000 });
+          clipPaths.push(clipPath);
+        }
+      }
 
-      try { await fs.unlink(listFile); } catch {}
+      // Concatenate clips with transitions
+      if (clipPaths.length === 1) {
+        await fs.copyFile(clipPaths[0], videoPath);
+      } else {
+        const listFile = path.join(tempDir, 'clips.txt');
+        const listContent = clipPaths.map(p => `file '${p}'`).join('\n');
+        await fs.writeFile(listFile, listContent);
+        const cmd = `ffmpeg -y -f concat -safe 0 -i "${listFile}" -c:v libx264 -pix_fmt yuv420p "${videoPath}"`;
+        execSync(cmd, { stdio: 'pipe', timeout: 120000 });
+      }
     }
 
-    // Add audio if available
+    // Add audio
+    let finalPath = videoPath;
     if (audioPath) {
       try {
-        const fsSync2 = require('fs');
-        if (fsSync2.existsSync(audioPath) && fsSync2.statSync(audioPath).size > 100) {
+        if (fsSync.existsSync(audioPath) && fsSync.statSync(audioPath).size > 100) {
           await this.addAudioToVideo(videoPath, audioPath, outputPath);
-          try { await fs.unlink(videoPath); } catch {} // cleanup intermediate
-          return outputPath;
+          try { await fs.unlink(videoPath); } catch {}
+          finalPath = outputPath;
         }
       } catch {}
     }
+    if (finalPath === videoPath) {
+      await fs.rename(videoPath, outputPath);
+    }
 
-    // No audio -- just rename visual to output
-    await fs.rename(videoPath, outputPath);
+    // Cleanup temp
+    try { await this.cleanupDirectory(tempDir); } catch {}
+
     return outputPath;
+  }
+
+  /**
+   * Pick a random video style for variety across videos.
+   */
+  _pickVideoStyle() {
+    const styles = [
+      {
+        name: 'ken-burns',
+        zoompan: true,
+        textPosition: 'bottom-left',
+        textBg: true,
+      },
+      {
+        name: 'cinematic',
+        zoompan: true,
+        textPosition: 'center-bottom',
+        textBg: true,
+      },
+      {
+        name: 'clean',
+        zoompan: false,
+        textPosition: 'top-left',
+        textBg: true,
+      },
+      {
+        name: 'dynamic',
+        zoompan: true,
+        textPosition: 'bottom-center',
+        textBg: false,
+      },
+    ];
+    return styles[Math.floor(Math.random() * styles.length)];
+  }
+
+  /**
+   * Build ffmpeg filter for a single clip with Ken Burns, text overlay, etc.
+   */
+  _buildClipFilter(index, totalClips, clipDuration, sectionTitle, style) {
+    const filters = [];
+    const fps = 30;
+    const totalFrames = clipDuration * fps;
+
+    // Scale to fit 1920x1080
+    filters.push('scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black');
+
+    // Ken Burns effect (slow zoom/pan) -- varies direction per clip
+    if (style.zoompan) {
+      const directions = [
+        // Slow zoom in
+        `zoompan=z='min(zoom+0.0005,1.15)':d=${totalFrames}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1920x1080:fps=${fps}`,
+        // Slow zoom out
+        `zoompan=z='if(eq(on,1),1.15,max(zoom-0.0005,1.0))':d=${totalFrames}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1920x1080:fps=${fps}`,
+        // Pan left to right
+        `zoompan=z='1.08':d=${totalFrames}:x='if(eq(on,1),0,min(x+1,(iw-iw/zoom)))':y='ih/2-(ih/zoom/2)':s=1920x1080:fps=${fps}`,
+        // Pan right to left
+        `zoompan=z='1.08':d=${totalFrames}:x='if(eq(on,1),(iw-iw/zoom),max(x-1,0))':y='ih/2-(ih/zoom/2)':s=1920x1080:fps=${fps}`,
+      ];
+      filters.length = 0; // zoompan handles scaling
+      filters.push(directions[index % directions.length]);
+    }
+
+    // Fade in (first 0.5s) and fade out (last 0.5s)
+    filters.push(`fade=in:0:${Math.min(15, totalFrames)},fade=out:${Math.max(0, totalFrames - 15)}:15`);
+
+    // Section title text overlay (shown for first 4 seconds)
+    if (sectionTitle) {
+      const safeTitle = sectionTitle
+        .replace(/'/g, "\\'")
+        .replace(/:/g, '\\:')
+        .replace(/,/g, '\\,')
+        .replace(/%/g, '%%')
+        .replace(/\[/g, '\\[')
+        .replace(/\]/g, '\\]');
+
+      // Text position varies by style
+      let x, y;
+      if (style.textPosition === 'top-left') { x = '60'; y = '60'; }
+      else if (style.textPosition === 'bottom-left') { x = '60'; y = 'h-th-60'; }
+      else { x = '(w-tw)/2'; y = 'h-th-80'; }
+
+      // Background box behind text for readability
+      const boxOpts = style.textBg ? ':box=1:boxcolor=black@0.6:boxborderw=15' : '';
+      
+      filters.push(
+        `drawtext=text='${safeTitle}':fontsize=42:fontcolor=white${boxOpts}` +
+        `:x=${x}:y=${y}:enable='between(t,0.5,4.5)'` +
+        `:fontfile=/System/Library/Fonts/Helvetica.ttc`
+      );
+    }
+
+    filters.push(`fps=${fps}`);
+    return filters.join(',');
+  }
+
+  /**
+   * Get per-section durations proportional to content length.
+   */
+  _getSectionDurations(script, totalDuration, assetCount) {
+    const sections = script.mainContent?.sections || [];
+    if (sections.length === 0) {
+      // Equal split
+      const per = Math.floor(totalDuration / assetCount);
+      return Array(assetCount).fill(per);
+    }
+
+    // Weight by content length
+    const weights = [];
+    for (let i = 0; i < assetCount; i++) {
+      const section = sections[i];
+      if (section) {
+        const contentLen = (section.content || '').length + (section.title || '').length;
+        weights.push(Math.max(contentLen, 50));
+      } else {
+        weights.push(50);
+      }
+    }
+    const totalWeight = weights.reduce((a, b) => a + b, 0);
+    return weights.map(w => Math.max(3, Math.round((w / totalWeight) * totalDuration)));
+  }
+
+  /**
+   * Get the title of script section at the given index.
+   */
+  _getSectionTitle(script, index) {
+    const sections = script.mainContent?.sections || [];
+    if (index < sections.length) {
+      return sections[index].title || null;
+    }
+    return null;
+  }
   }
 
   createSlideshowHTML(script, visualAssets) {
