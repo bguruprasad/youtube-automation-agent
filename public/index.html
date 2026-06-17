@@ -397,7 +397,7 @@
 
         container.innerHTML = '<div class="suggestions-grid">' + data.suggestions.map(s => {
           const diff = (s.difficulty || 'medium').toLowerCase();
-          const views = s.estimatedViews ? Number(s.estimatedViews).toLocaleString() : '-';
+          const views = s.estimatedViews || '-';
           return `
             <div class="suggestion-card">
               <div class="topic-label">${escHtml(s.topic || '')}</div>
