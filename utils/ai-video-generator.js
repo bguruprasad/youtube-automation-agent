@@ -675,11 +675,15 @@ class AIVideoGenerator {
       const MAX_TEXT_WIDTH = WIDTH - PADDING * 2;
 
       // Truncate overly long titles and uppercase for impact
-      const displayTitle = (title.length > 80 ? title.slice(0, 77) + '...' : title).toUpperCase();
+      const displayTitle = (title.length > 60 ? title.slice(0, 57) + '...' : title).toUpperCase();
 
       // Choose font size: shrink for longer titles
-      const fontSize = displayTitle.length > 40 ? 64 : displayTitle.length > 25 ? 76 : 90;
-      const lineHeight = Math.round(fontSize * 1.2);
+      let fontSize;
+      if (displayTitle.length > 50) fontSize = 48;
+      else if (displayTitle.length > 35) fontSize = 56;
+      else if (displayTitle.length > 20) fontSize = 68;
+      else fontSize = 84;
+      const lineHeight = Math.round(fontSize * 1.25);
 
       // Rough word-wrap: split into lines that fit MAX_TEXT_WIDTH
       const words = displayTitle.split(/\s+/);
@@ -697,6 +701,12 @@ class AIVideoGenerator {
         }
       }
       if (currentLine) lines.push(currentLine);
+
+      // Cap at 3 lines max
+      if (lines.length > 3) {
+        lines.splice(3);
+        lines[2] = lines[2].slice(0, -3) + '...';
+      }
 
       // Position text block in the lower-center area
       const textBlockHeight = lines.length * lineHeight;
