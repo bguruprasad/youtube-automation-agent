@@ -221,15 +221,16 @@ class AIVideoGenerator {
 
   enhanceVisualPrompt(prompt, style) {
     const styleEnhancements = {
-      ethereal: "ethereal, dreamy, mystical, soft lighting, floating particles, cosmic background",
-      modern: "modern, clean, minimalist, professional, sleek design, contemporary",
-      animated: "animated style, cartoon, vibrant colors, expressive, dynamic",
-      cinematic: "cinematic lighting, dramatic, movie poster style, high contrast",
-      abstract: "abstract art, geometric shapes, gradient colors, artistic composition"
+      modern: "clean modern design, bright natural lighting, professional photography, shallow depth of field",
+      cinematic: "cinematic lighting, dramatic composition, film still aesthetic, high contrast, moody atmosphere",
+      animated: "3D rendered illustration, vibrant colors, stylized, Pixar-quality, playful",
+      minimalist: "minimalist composition, pastel tones, clean background, editorial photography",
+      tech: "futuristic tech aesthetic, neon accents, dark background, sleek modern devices",
+      lifestyle: "lifestyle photography, warm golden hour light, authentic candid feel, cozy atmosphere",
     };
 
-    const enhancement = styleEnhancements[style] || styleEnhancements.ethereal;
-    return `${prompt}, ${enhancement}, high quality, 16:9 aspect ratio, digital art`;
+    const enhancement = styleEnhancements[style] || styleEnhancements.modern;
+    return `${prompt}. Style: ${enhancement}. Ultra high quality, photorealistic, 16:9 widescreen composition. No text or watermarks.`;
   }
 
   async downloadImage(url, outputPath) {

@@ -232,7 +232,7 @@ class ProductionManagementAgent {
     try {
       // Try to generate AI thumbnail first
       const thumbnailScript = script || thumbnail.script || { title: 'Untitled Video' };
-      const aiThumbnail = await this.aiVideoGenerator.generateThumbnail(thumbnailScript, 'ethereal');
+      const aiThumbnail = await this.aiVideoGenerator.generateThumbnail(thumbnailScript, 'cinematic');
       
       // Copy to output directory
       if (outputDir && aiThumbnail.path) {
@@ -323,7 +323,7 @@ class ProductionManagementAgent {
       const visualAssets = [];
       
       for (const prompt of visualPrompts) {
-        const assets = await this.aiVideoGenerator.generateVisualAssets(prompt, 'ethereal', 1);
+        const assets = await this.aiVideoGenerator.generateVisualAssets(prompt, 'modern', 1);
         visualAssets.push(...assets);
       }
       
@@ -688,21 +688,24 @@ class ProductionManagementAgent {
   createVisualPromptsFromScript(script) {
     const prompts = [];
     
-    // Title prompt
-    prompts.push(`${script.title}, ethereal storytelling, mystical background`);
-    
-    // Content-based prompts
+    // Use the AI-generated visual hints from the script sections
     if (script.mainContent && script.mainContent.sections) {
       script.mainContent.sections.forEach(section => {
-        if (section.title) {
-          prompts.push(`${section.title}, ethereal dreamscape, creative visualization`);
+        // Prefer the visuals array the AI script writer generates
+        if (section.visuals && section.visuals.length > 0) {
+          const visualDesc = section.visuals[0];
+          prompts.push(`${visualDesc}. Scene for a YouTube video about "${script.title}".`);
+        } else if (section.title && section.content) {
+          // Extract a meaningful visual from the content
+          const contentSnippet = (section.content || '').slice(0, 150);
+          prompts.push(`Visual scene illustrating "${section.title}": ${contentSnippet}. For a YouTube video.`);
         }
       });
     }
     
-    // Ensure we have at least 3 prompts
-    while (prompts.length < 3) {
-      prompts.push('ethereal dreamscape, mystical storytelling, creative visualization');
+    // If no section visuals, create prompts from the title
+    if (prompts.length === 0) {
+      prompts.push(`Cover image for a YouTube video titled "${script.title}". Professional, engaging.`);
     }
     
     return prompts.slice(0, 5); // Limit to 5 for cost control
