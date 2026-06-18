@@ -90,3 +90,6 @@ output/
 
 # Session notes
 jcode.md
+
+# Generated knowledge graph (graphify)
+graphify-out/
