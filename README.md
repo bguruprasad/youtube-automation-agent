@@ -1,6 +1,82 @@
 # 🎬 YouTube Automation Agent
 
-A fully automated YouTube channel management system that creates, optimizes, and publishes content daily using AI agents. No coding required - just configure and let the AI agents handle your YouTube channel 24/7!
+A fully automated YouTube video generation pipeline. Topic in, finished video out -- script, AI images, TTS narration, video assembly, thumbnail, captions, and SEO metadata.
+
+---
+
+## TLDR
+
+```bash
+# Setup (one time)
+cp .env.example .env        # Add your OPENAI_API_KEY
+npm install
+
+# Start server
+node index.js                # Runs on port 3456
+
+# Stop server
+# Ctrl+C (if foreground), or:
+kill $(pgrep -f "node index.js")
+
+# Run in background
+nohup node index.js > server.log 2>&1 &
+
+# Access
+# Dashboard:  http://localhost:3456
+# Health:     http://localhost:3456/health
+# Suggest:    http://localhost:3456/suggest?niche=tech&count=5
+# Generate:   curl -X POST http://localhost:3456/generate -H "Content-Type: application/json" -d '{"topic": "Your Topic"}'
+# Outputs:    http://localhost:3456/outputs
+```
+
+---
+
+## Starting and Stopping the Server
+
+### Start (foreground)
+```bash
+node index.js
+```
+Server starts on port **3456**. Press `Ctrl+C` to stop.
+
+### Start (background)
+```bash
+nohup node index.js > server.log 2>&1 &
+echo $!    # prints the PID
+```
+
+### Check if running
+```bash
+ps aux | grep "node index.js" | grep -v grep
+# or
+curl http://localhost:3456/health
+```
+
+### Stop
+```bash
+# If running in foreground: Ctrl+C
+# If running in background:
+kill $(pgrep -f "node index.js")
+```
+
+### Access
+| URL | Description |
+|-----|-------------|
+| http://localhost:3456 | Web dashboard |
+| http://localhost:3456/health | Health check |
+| http://localhost:3456/suggest?niche=tech&count=5 | AI topic suggestions |
+| http://localhost:3456/outputs | List generated videos |
+
+### Generate a video
+From the dashboard, or via API:
+```bash
+curl -X POST http://localhost:3456/generate \
+  -H "Content-Type: application/json" \
+  -d '{"topic": "5 Morning Habits That Changed My Life"}'
+```
+Output lands in `output/<date>_<title-slug>/` with video.mp4, thumbnail.png, narration.mp3, etc.
+
+---
 
 ## ✨ What This Does
 
