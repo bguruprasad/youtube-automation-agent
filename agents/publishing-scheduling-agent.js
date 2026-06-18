@@ -1,6 +1,23 @@
 const { google } = require('googleapis');
 const fsPromises = require('fs').promises;
 const fs = require('fs');
+const sharp = require('sharp');
+
+// YouTube rejects thumbnails over 2MB. Resize to the recommended 1280x720 and
+// step JPEG quality down until the encoded buffer fits under the limit.
+const YOUTUBE_THUMBNAIL_MAX_BYTES = 2 * 1024 * 1024;
+async function compressThumbnailToLimit(thumbnailPath) {
+  const original = await fsPromises.readFile(thumbnailPath);
+  if (original.length <= YOUTUBE_THUMBNAIL_MAX_BYTES) return original;
+
+  const base = sharp(thumbnailPath).resize(1280, 720, { fit: 'cover' });
+  for (const quality of [90, 80, 70, 60, 50]) {
+    const buf = await base.clone().jpeg({ quality }).toBuffer();
+    if (buf.length <= YOUTUBE_THUMBNAIL_MAX_BYTES) return buf;
+  }
+  // Last resort: smallest acceptable quality.
+  return base.clone().jpeg({ quality: 40 }).toBuffer();
+}
 const path = require('path');
 const { Logger } = require('../utils/logger');
 
@@ -179,8 +196,8 @@ class PublishingSchedulingAgent {
 
   async uploadThumbnail(videoId, thumbnailPath) {
     try {
-      const thumbnailBuffer = await fsPromises.readFile(thumbnailPath);
-      
+      const thumbnailBuffer = await compressThumbnailToLimit(thumbnailPath);
+
       await this.youtube.thumbnails.set({
         videoId: videoId,
         media: {
