@@ -332,17 +332,20 @@ class AIVideoGenerator {
         const clipDuration = sectionDurations[i] || Math.floor(duration / validAssets.length);
         const sectionTitle = this._getSectionTitle(script, i);
         
-        // Build per-clip filter with Ken Burns, text overlay, etc.
+        // Burn section title text onto image via sharp (ffmpeg drawtext not available)
+        const annotatedImage = await this._burnTextOnImage(validAssets[i], sectionTitle, tempDir, i);
+        
+        // Build per-clip filter with Ken Burns, fades
         const filter = this._buildClipFilter(i, validAssets.length, clipDuration, sectionTitle, videoStyle);
         
-        const cmd = `ffmpeg -y -loop 1 -i "${validAssets[i]}" -t ${clipDuration} ` +
+        const cmd = `ffmpeg -y -loop 1 -i "${annotatedImage}" -t ${clipDuration} ` +
           `-vf "${filter}" -c:v libx264 -pix_fmt yuv420p -r 30 "${clipPath}"`;
         try {
           execSync(cmd, { stdio: 'pipe', timeout: 60000 });
           clipPaths.push(clipPath);
         } catch (e) {
           this.logger.warn(`Clip ${i} generation failed, using simple scale`);
-          const fallback = `ffmpeg -y -loop 1 -i "${validAssets[i]}" -t ${clipDuration} ` +
+          const fallback = `ffmpeg -y -loop 1 -i "${annotatedImage}" -t ${clipDuration} ` +
             `-vf "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=30" ` +
             `-c:v libx264 -pix_fmt yuv420p "${clipPath}"`;
           execSync(fallback, { stdio: 'pipe', timeout: 60000 });
@@ -417,7 +420,8 @@ class AIVideoGenerator {
   }
 
   /**
-   * Build ffmpeg filter for a single clip with Ken Burns, text overlay, etc.
+   * Build ffmpeg filter for a single clip with Ken Burns, fades, etc.
+   * Text overlays are done via sharp pre-processing (ffmpeg drawtext unavailable).
    */
   _buildClipFilter(index, totalClips, clipDuration, sectionTitle, style) {
     const filters = [];
@@ -446,34 +450,52 @@ class AIVideoGenerator {
     // Fade in (first 0.5s) and fade out (last 0.5s)
     filters.push(`fade=in:0:${Math.min(15, totalFrames)},fade=out:${Math.max(0, totalFrames - 15)}:15`);
 
-    // Section title text overlay (shown for first 4 seconds)
-    if (sectionTitle) {
-      const safeTitle = sectionTitle
-        .replace(/'/g, "\\'")
-        .replace(/:/g, '\\:')
-        .replace(/,/g, '\\,')
-        .replace(/%/g, '%%')
-        .replace(/\[/g, '\\[')
-        .replace(/\]/g, '\\]');
-
-      // Text position varies by style
-      let x, y;
-      if (style.textPosition === 'top-left') { x = '60'; y = '60'; }
-      else if (style.textPosition === 'bottom-left') { x = '60'; y = 'h-th-60'; }
-      else { x = '(w-tw)/2'; y = 'h-th-80'; }
-
-      // Background box behind text for readability
-      const boxOpts = style.textBg ? ':box=1:boxcolor=black@0.6:boxborderw=15' : '';
-      
-      filters.push(
-        `drawtext=text='${safeTitle}':fontsize=42:fontcolor=white${boxOpts}` +
-        `:x=${x}:y=${y}:enable='between(t,0.5,4.5)'` +
-        `:fontfile=/System/Library/Fonts/Helvetica.ttc`
-      );
-    }
-
     filters.push(`fps=${fps}`);
     return filters.join(',');
+  }
+
+  /**
+   * Burn section title text onto an image using sharp SVG overlay.
+   * Returns path to the annotated image (or original if sharp unavailable).
+   */
+  async _burnTextOnImage(imagePath, sectionTitle, tempDir, index) {
+    if (!sharp || !sectionTitle) return imagePath;
+
+    try {
+      const meta = await sharp(imagePath).metadata();
+      const W = meta.width || 1920;
+      const H = meta.height || 1080;
+      const fontSize = 48;
+      const safeTitle = this._escapeXml(sectionTitle.length > 60 ? sectionTitle.slice(0, 57) + '...' : sectionTitle);
+
+      const svgOverlay = Buffer.from(`
+        <svg width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stop-color="#000000" stop-opacity="0"/>
+              <stop offset="60%" stop-color="#000000" stop-opacity="0.7"/>
+            </linearGradient>
+          </defs>
+          <rect x="0" y="${H - 140}" width="${W}" height="140" fill="url(#bg)"/>
+          <text x="${W / 2}" y="${H - 50}" text-anchor="middle"
+            font-family="Arial Black, Helvetica, sans-serif" font-size="${fontSize}" font-weight="900"
+            stroke="#000000" stroke-width="4" fill="#000000" paint-order="stroke">${safeTitle}</text>
+          <text x="${W / 2}" y="${H - 50}" text-anchor="middle"
+            font-family="Arial Black, Helvetica, sans-serif" font-size="${fontSize}" font-weight="900"
+            fill="#FFFFFF">${safeTitle}</text>
+        </svg>
+      `);
+
+      const outPath = path.join(tempDir, `annotated_${index}.png`);
+      await sharp(imagePath)
+        .composite([{ input: svgOverlay, top: 0, left: 0 }])
+        .png()
+        .toFile(outPath);
+      return outPath;
+    } catch (e) {
+      this.logger.warn(`Text burn failed for clip ${index}: ${e.message}`);
+      return imagePath;
+    }
   }
 
   /**
@@ -511,7 +533,6 @@ class AIVideoGenerator {
       return sections[index].title || null;
     }
     return null;
-  }
   }
 
   createSlideshowHTML(script, visualAssets) {
@@ -838,39 +859,49 @@ class AIVideoGenerator {
       const PADDING = 60;
       const MAX_TEXT_WIDTH = WIDTH - PADDING * 2;
 
-      // Truncate overly long titles and uppercase for impact
-      const displayTitle = (title.length > 60 ? title.slice(0, 57) + '...' : title).toUpperCase();
+      // Truncate and uppercase for impact
+      const displayTitle = (title.length > 50 ? title.slice(0, 47) + '...' : title).toUpperCase();
 
-      // Choose font size: shrink for longer titles
-      let fontSize;
-      if (displayTitle.length > 50) fontSize = 48;
-      else if (displayTitle.length > 35) fontSize = 56;
-      else if (displayTitle.length > 20) fontSize = 68;
-      else fontSize = 84;
-      const lineHeight = Math.round(fontSize * 1.25);
-
-      // Rough word-wrap: split into lines that fit MAX_TEXT_WIDTH
+      // Word-wrap into lines, then pick the largest font that fits in 2-3 lines
+      const MAX_LINES = 3;
       const words = displayTitle.split(/\s+/);
-      const lines = [];
-      let currentLine = '';
-      const charsPerLine = Math.floor(MAX_TEXT_WIDTH / (fontSize * 0.52));
 
-      for (const word of words) {
-        const candidate = currentLine ? `${currentLine} ${word}` : word;
-        if (candidate.length > charsPerLine && currentLine) {
-          lines.push(currentLine);
-          currentLine = word;
-        } else {
-          currentLine = candidate;
+      // Try font sizes from large to small, pick the first that fits within MAX_LINES
+      const fontCandidates = [84, 72, 60, 52, 44, 38];
+      let fontSize = 44;
+      let lines = [];
+
+      for (const fs of fontCandidates) {
+        // Bold uppercase: ~0.65 character width ratio for Impact/Arial Black
+        const charsPerLine = Math.floor(MAX_TEXT_WIDTH / (fs * 0.65));
+        const testLines = [];
+        let currentLine = '';
+
+        for (const word of words) {
+          const candidate = currentLine ? `${currentLine} ${word}` : word;
+          if (candidate.length > charsPerLine && currentLine) {
+            testLines.push(currentLine);
+            currentLine = word;
+          } else {
+            currentLine = candidate;
+          }
+        }
+        if (currentLine) testLines.push(currentLine);
+
+        if (testLines.length <= MAX_LINES) {
+          fontSize = fs;
+          lines = testLines;
+          break;
+        }
+        // Last candidate: force-truncate to MAX_LINES
+        if (fs === fontCandidates[fontCandidates.length - 1]) {
+          fontSize = fs;
+          lines = testLines.slice(0, MAX_LINES);
+          lines[MAX_LINES - 1] = lines[MAX_LINES - 1].slice(0, -3) + '...';
         }
       }
-      if (currentLine) lines.push(currentLine);
 
-      // Cap at 3 lines max
-      if (lines.length > 3) {
-        lines.splice(3);
-        lines[2] = lines[2].slice(0, -3) + '...';
-      }
+      const lineHeight = Math.round(fontSize * 1.3);
 
       // Position text block in the lower-center area
       const textBlockHeight = lines.length * lineHeight;
