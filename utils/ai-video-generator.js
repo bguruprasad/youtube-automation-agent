@@ -798,14 +798,14 @@ class AIVideoGenerator {
       }
 
       const prompt = [
-        `Cinematic ${style} background image for a video about: "${script.title}".`,
-        'This is ONLY a background image. TEXT WILL BE ADDED SEPARATELY.',
-        'ABSOLUTELY NO TEXT, NO LETTERS, NO WORDS, NO NUMBERS, NO TITLES, NO WATERMARKS anywhere in the image.',
-        'Composition: bold saturated colors, high contrast, dramatic cinematic lighting.',
-        'Strong visual focal point slightly above center.',
-        'The bottom third must be dark, empty, and uncluttered (reserved for text overlay).',
-        'Ultra-sharp 4K quality, professional photography aesthetic.',
-        'Vibrant colors that pop on small mobile screens.',
+        `Create a visually stunning ${style} photograph that represents the concept of: "${script.title}".`,
+        'CRITICAL RULES:',
+        '- DO NOT include ANY text, letters, words, numbers, titles, labels, captions, watermarks, or logos anywhere in the image.',
+        '- DO NOT include any UI elements, text boxes, banners, or overlays.',
+        '- This must be a PURE visual image with ZERO text of any kind.',
+        'Style: bold saturated colors, high contrast, dramatic cinematic lighting.',
+        'Composition: strong visual focal point, clean uncluttered lower third area.',
+        'Quality: ultra-sharp, 4K, professional photography aesthetic, vibrant colors that pop on small screens.',
       ].join(' ');
       
       const response = await this.openai.images.generate({
@@ -857,9 +857,6 @@ class AIVideoGenerator {
       const HEIGHT = 1024;
       const PADDING = 100; // generous horizontal margin
       const MAX_TEXT_WIDTH = WIDTH - PADDING * 2;
-
-      // Step 1: Erase any AI-generated text by blurring + darkening the bottom 40%
-      const cleanedImage = await this._cleanBottomRegion(imagePath, WIDTH, HEIGHT);
 
       // Use FULL title in uppercase -- no truncation. Word-wrap + shrink font to fit.
       const displayTitle = title.toUpperCase();
@@ -957,55 +954,15 @@ class AIVideoGenerator {
       `);
 
       const outputPath = imagePath.replace(/\.png$/, '_final.png');
-      await sharp(cleanedImage)
+      await sharp(imagePath)
         .composite([{ input: svgOverlay, top: 0, left: 0 }])
         .png()
         .toFile(outputPath);
-
-      // Cleanup temp cleaned image
-      if (cleanedImage !== imagePath) {
-        try { await require('fs').promises.unlink(cleanedImage); } catch {}
-      }
 
       this.logger.info('Text overlay applied to thumbnail');
       return outputPath;
     } catch (error) {
       this.logger.warn('Text overlay failed, using raw thumbnail:', error.message);
-      return imagePath;
-    }
-  }
-
-  /**
-   * Clean the bottom region of a thumbnail by extracting the bottom portion,
-   * blurring it heavily, darkening it, and compositing it back.
-   * This destroys any AI-generated text in the image.
-   */
-  async _cleanBottomRegion(imagePath, width, height) {
-    try {
-      const cutY = Math.floor(height * 0.60); // bottom 40%
-      const regionHeight = height - cutY;
-
-      // Extract bottom region, blur heavily, and darken
-      const blurredBottom = await sharp(imagePath)
-        .extract({ left: 0, top: cutY, width, height: regionHeight })
-        .blur(25)
-        .modulate({ brightness: 0.4 })
-        .toBuffer();
-
-      // Composite blurred bottom back onto original
-      const cleanedPath = imagePath.replace(/\.png$/, '_cleaned.png');
-      await sharp(imagePath)
-        .composite([{
-          input: blurredBottom,
-          top: cutY,
-          left: 0,
-        }])
-        .png()
-        .toFile(cleanedPath);
-
-      return cleanedPath;
-    } catch (e) {
-      this.logger.warn('Bottom region cleanup failed:', e.message);
       return imagePath;
     }
   }
