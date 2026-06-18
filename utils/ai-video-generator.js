@@ -855,7 +855,7 @@ class AIVideoGenerator {
     try {
       const WIDTH = 1536;
       const HEIGHT = 1024;
-      const PADDING = 60;
+      const PADDING = 100; // generous horizontal margin
       const MAX_TEXT_WIDTH = WIDTH - PADDING * 2;
 
       // Use FULL title in uppercase -- no truncation. Word-wrap + shrink font to fit.
@@ -934,8 +934,8 @@ class AIVideoGenerator {
         ].join('\n');
       }).join('\n');
 
-      // Dark gradient covering bottom 45% to hide any AI-generated text and ensure readability
-      const gradientTop = Math.floor(HEIGHT * 0.55);
+      // Dark gradient covering bottom 45% -- fully opaque at bottom to hide any AI-generated text
+      const gradientTop = Math.floor(HEIGHT * 0.50);
       const gradientHeight = HEIGHT - gradientTop;
 
       const svgOverlay = Buffer.from(`
@@ -943,8 +943,9 @@ class AIVideoGenerator {
           <defs>
             <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
               <stop offset="0%" stop-color="#000000" stop-opacity="0"/>
-              <stop offset="30%" stop-color="#000000" stop-opacity="0.5"/>
-              <stop offset="100%" stop-color="#000000" stop-opacity="0.85"/>
+              <stop offset="35%" stop-color="#000000" stop-opacity="0.65"/>
+              <stop offset="70%" stop-color="#000000" stop-opacity="0.92"/>
+              <stop offset="100%" stop-color="#000000" stop-opacity="1.0"/>
             </linearGradient>
           </defs>
           <rect x="0" y="${gradientTop}" width="${WIDTH}" height="${gradientHeight}" fill="url(#bg)"/>
