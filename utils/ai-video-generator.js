@@ -798,15 +798,14 @@ class AIVideoGenerator {
       }
 
       const prompt = [
-        `YouTube thumbnail background image in ${style} style.`,
-        `Subject: "${script.title}".`,
-        'Composition: bold, saturated colors with high contrast.',
-        'Dramatic cinematic lighting with strong focal point in the center.',
-        'Leave the bottom-third and right side relatively clean and uncluttered',
-        'so text can be overlaid later.',
-        'Do NOT render any text, letters, words, or watermarks in the image.',
-        'Ultra-sharp, 4K quality, professional photography look.',
-        'Vibrant color palette that pops on small screens.',
+        `Cinematic ${style} background image for a video about: "${script.title}".`,
+        'This is ONLY a background image. TEXT WILL BE ADDED SEPARATELY.',
+        'ABSOLUTELY NO TEXT, NO LETTERS, NO WORDS, NO NUMBERS, NO TITLES, NO WATERMARKS anywhere in the image.',
+        'Composition: bold saturated colors, high contrast, dramatic cinematic lighting.',
+        'Strong visual focal point slightly above center.',
+        'The bottom third must be dark, empty, and uncluttered (reserved for text overlay).',
+        'Ultra-sharp 4K quality, professional photography aesthetic.',
+        'Vibrant colors that pop on small mobile screens.',
       ].join(' ');
       
       const response = await this.openai.images.generate({
@@ -859,21 +858,20 @@ class AIVideoGenerator {
       const PADDING = 60;
       const MAX_TEXT_WIDTH = WIDTH - PADDING * 2;
 
-      // Truncate and uppercase for impact
-      const displayTitle = (title.length > 50 ? title.slice(0, 47) + '...' : title).toUpperCase();
+      // Use FULL title in uppercase -- no truncation. Word-wrap + shrink font to fit.
+      const displayTitle = title.toUpperCase();
 
-      // Word-wrap into lines, then pick the largest font that fits in 2-3 lines
       const MAX_LINES = 3;
       const words = displayTitle.split(/\s+/);
 
-      // Try font sizes from large to small, pick the first that fits within MAX_LINES
-      const fontCandidates = [84, 72, 60, 52, 44, 38];
-      let fontSize = 44;
+      // Try font sizes from large to small, pick the largest that fits within MAX_LINES
+      const fontCandidates = [80, 68, 58, 50, 44, 38, 32];
+      let fontSize = 38;
       let lines = [];
 
       for (const fs of fontCandidates) {
-        // Bold uppercase: ~0.65 character width ratio for Impact/Arial Black
-        const charsPerLine = Math.floor(MAX_TEXT_WIDTH / (fs * 0.65));
+        // Bold uppercase: ~0.62 character width ratio for Impact/Arial Black
+        const charsPerLine = Math.floor(MAX_TEXT_WIDTH / (fs * 0.62));
         const testLines = [];
         let currentLine = '';
 
@@ -893,29 +891,42 @@ class AIVideoGenerator {
           lines = testLines;
           break;
         }
-        // Last candidate: force-truncate to MAX_LINES
-        if (fs === fontCandidates[fontCandidates.length - 1]) {
-          fontSize = fs;
-          lines = testLines.slice(0, MAX_LINES);
-          lines[MAX_LINES - 1] = lines[MAX_LINES - 1].slice(0, -3) + '...';
+      }
+
+      // If even smallest font doesn't fit, word-wrap at smallest and take first MAX_LINES
+      if (lines.length === 0) {
+        const charsPerLine = Math.floor(MAX_TEXT_WIDTH / (32 * 0.62));
+        let currentLine = '';
+        for (const word of words) {
+          const candidate = currentLine ? `${currentLine} ${word}` : word;
+          if (candidate.length > charsPerLine && currentLine) {
+            lines.push(currentLine);
+            currentLine = word;
+          } else {
+            currentLine = candidate;
+          }
         }
+        if (currentLine) lines.push(currentLine);
+        fontSize = 32;
+        lines = lines.slice(0, MAX_LINES);
       }
 
       const lineHeight = Math.round(fontSize * 1.3);
-
-      // Position text block in the lower-center area
       const textBlockHeight = lines.length * lineHeight;
-      const startY = HEIGHT - textBlockHeight - PADDING - 40;
+
+      // Position text near the bottom
+      const startY = HEIGHT - textBlockHeight - 50;
 
       const textElements = lines.map((line, i) => {
         const y = startY + i * lineHeight + fontSize;
-        // White text with black stroke for readability on any background
         return [
+          // Black stroke for outline
           `<text x="${WIDTH / 2}" y="${y}" text-anchor="middle"`,
           `  font-family="Arial Black, Impact, Helvetica, sans-serif"`,
           `  font-size="${fontSize}" font-weight="900"`,
-          `  stroke="#000000" stroke-width="6" fill="#000000"`,
+          `  stroke="#000000" stroke-width="7" fill="#000000"`,
           `  paint-order="stroke">${this._escapeXml(line)}</text>`,
+          // White fill on top
           `<text x="${WIDTH / 2}" y="${y}" text-anchor="middle"`,
           `  font-family="Arial Black, Impact, Helvetica, sans-serif"`,
           `  font-size="${fontSize}" font-weight="900"`,
@@ -923,17 +934,17 @@ class AIVideoGenerator {
         ].join('\n');
       }).join('\n');
 
-      // Semi-transparent gradient bar behind text for extra contrast
-      const gradientTop = startY - 20;
-      const gradientHeight = textBlockHeight + PADDING + 60;
+      // Dark gradient covering bottom 45% to hide any AI-generated text and ensure readability
+      const gradientTop = Math.floor(HEIGHT * 0.55);
+      const gradientHeight = HEIGHT - gradientTop;
 
       const svgOverlay = Buffer.from(`
         <svg width="${WIDTH}" height="${HEIGHT}" xmlns="http://www.w3.org/2000/svg">
           <defs>
             <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
               <stop offset="0%" stop-color="#000000" stop-opacity="0"/>
-              <stop offset="40%" stop-color="#000000" stop-opacity="0.6"/>
-              <stop offset="100%" stop-color="#000000" stop-opacity="0.8"/>
+              <stop offset="30%" stop-color="#000000" stop-opacity="0.5"/>
+              <stop offset="100%" stop-color="#000000" stop-opacity="0.85"/>
             </linearGradient>
           </defs>
           <rect x="0" y="${gradientTop}" width="${WIDTH}" height="${gradientHeight}" fill="url(#bg)"/>
