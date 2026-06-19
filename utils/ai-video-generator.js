@@ -249,17 +249,17 @@ class AIVideoGenerator {
     });
   }
 
-  async generateVideo(script, visualAssets, audioPath, outputPath) {
+  async generateVideo(script, visualAssets, audioPath, outputPath, options = {}) {
     this.logger.info('Generating video from assets...');
-    
+
     try {
       // Try Replicate for video generation first
       if (this.replicate && this.replicate.auth) {
         return await this.generateReplicateVideo(script, visualAssets, audioPath, outputPath);
       }
-      
+
       // Fallback to simple slideshow with Playwright
-      return await this.generateSlideshowVideo(script, visualAssets, audioPath, outputPath);
+      return await this.generateSlideshowVideo(script, visualAssets, audioPath, outputPath, options);
     } catch (error) {
       this.logger.error('Video generation failed:', error);
       return await this.simulateVideoGeneration(script, visualAssets, audioPath, outputPath);
@@ -294,8 +294,12 @@ class AIVideoGenerator {
     return outputPath;
   }
 
-  async generateSlideshowVideo(script, visualAssets, audioPath, outputPath) {
-    this.logger.info('Creating dynamic video with ffmpeg...');
+  async generateSlideshowVideo(script, visualAssets, audioPath, outputPath, options = {}) {
+    // Resolution-aware: default landscape 1920x1080; Shorts pass 1080x1920.
+    const W = options.width || 1920;
+    const H = options.height || 1080;
+    const SCALE_PAD = `scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:black`;
+    this.logger.info(`Creating dynamic video with ffmpeg... (${W}x${H})`);
 
     const duration = this.calculateScriptDuration(script);
     const { execSync } = require('child_process');
@@ -313,7 +317,7 @@ class AIVideoGenerator {
     if (validAssets.length === 0) {
       this.logger.warn('No valid visual assets, generating placeholder video');
       const safeTitle = (script.title || 'Video').replace(/'/g, "\\'").replace(/:/g, '\\:');
-      const cmd = `ffmpeg -y -f lavfi -i "color=c=0x1a1a2e:s=1920x1080:d=${duration}" ` +
+      const cmd = `ffmpeg -y -f lavfi -i "color=c=0x1a1a2e:s=${W}x${H}:d=${duration}" ` +
         `-vf "drawtext=text='${safeTitle}':fontsize=54:fontcolor=white:x=(w-text_w)/2:y=(h-text_h)/2:fontfile=/System/Library/Fonts/Helvetica.ttc" ` +
         `-c:v libx264 -pix_fmt yuv420p "${videoPath}"`;
       execSync(cmd, { stdio: 'pipe', timeout: 60000 });
@@ -333,11 +337,11 @@ class AIVideoGenerator {
         const sectionTitle = this._getSectionTitle(script, i);
         
         // Build the Ken Burns / fade filter that operates on the raw image.
-        const filter = this._buildClipFilter(i, validAssets.length, clipDuration, sectionTitle, videoStyle);
+        const filter = this._buildClipFilter(i, validAssets.length, clipDuration, sectionTitle, videoStyle, { width: W, height: H });
 
         // Generate a full-frame transparent text overlay and composite it AFTER
         // zoompan via ffmpeg overlay, so the title is never cropped by the zoom.
-        const textOverlay = await this._makeTextOverlay(sectionTitle, tempDir, i);
+        const textOverlay = await this._makeTextOverlay(sectionTitle, tempDir, i, { width: W, height: H });
 
         // zoompan encoding is CPU-heavy; use a fast preset + all cores, and a
         // timeout that scales with clip length (so long sections don't get
@@ -363,8 +367,8 @@ class AIVideoGenerator {
           // Fallback: static scaled image + the text overlay (no Ken Burns).
           const overlayInput = textOverlay ? ` -i "${textOverlay}"` : '';
           const overlayFilter = textOverlay
-            ? `-filter_complex "[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=30[bg];[bg][1:v]overlay=0:0:format=auto"`
-            : `-vf "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=30"`;
+            ? `-filter_complex "[0:v]${SCALE_PAD},fps=30[bg];[bg][1:v]overlay=0:0:format=auto"`
+            : `-vf "${SCALE_PAD},fps=30"`;
           const fallback = `ffmpeg -y -loop 1 -i "${validAssets[i]}"${overlayInput} -t ${clipDuration} ` +
             `${overlayFilter} ${enc} "${clipPath}"`;
           execSync(fallback, { stdio: 'pipe', timeout: clipTimeout });
@@ -450,13 +454,15 @@ class AIVideoGenerator {
    * Build ffmpeg filter for a single clip with Ken Burns, fades, etc.
    * Text overlays are done via sharp pre-processing (ffmpeg drawtext unavailable).
    */
-  _buildClipFilter(index, totalClips, clipDuration, sectionTitle, style) {
+  _buildClipFilter(index, totalClips, clipDuration, sectionTitle, style, dims = {}) {
+    const W = dims.width || 1920;
+    const H = dims.height || 1080;
     const filters = [];
     const fps = 30;
     const totalFrames = clipDuration * fps;
 
-    // Scale to fit 1920x1080
-    filters.push('scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black');
+    // Scale to fit target resolution
+    filters.push(`scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:black`);
 
     // Ken Burns effect (slow zoom/pan) -- varies direction per clip.
     // IMPORTANT: zoompan crops toward the center as it zooms, so we keep the
@@ -471,15 +477,16 @@ class AIVideoGenerator {
       const zoomOut = `${zMax}-${zStep.toFixed(6)}*on`;            // zMax -> 1.0
       const cx = `iw/2-(iw/zoom/2)`;
       const cy = `ih/2-(ih/zoom/2)`;
+      const S = `${W}x${H}`;
       const directions = [
         // Slow zoom in (centered) - starts at full frame, text visible at start
-        `zoompan=z='min(${zoomIn},${zMax})':d=${totalFrames}:x='${cx}':y='${cy}':s=1920x1080:fps=${fps}`,
+        `zoompan=z='min(${zoomIn},${zMax})':d=${totalFrames}:x='${cx}':y='${cy}':s=${S}:fps=${fps}`,
         // Slow zoom out (centered) - ends at full frame
-        `zoompan=z='max(${zoomOut},1.0)':d=${totalFrames}:x='${cx}':y='${cy}':s=1920x1080:fps=${fps}`,
+        `zoompan=z='max(${zoomOut},1.0)':d=${totalFrames}:x='${cx}':y='${cy}':s=${S}:fps=${fps}`,
         // Gentle pan left->right at a fixed modest zoom
-        `zoompan=z='1.06':d=${totalFrames}:x='(iw-iw/zoom)*on/${totalFrames}':y='${cy}':s=1920x1080:fps=${fps}`,
+        `zoompan=z='1.06':d=${totalFrames}:x='(iw-iw/zoom)*on/${totalFrames}':y='${cy}':s=${S}:fps=${fps}`,
         // Gentle pan right->left at a fixed modest zoom
-        `zoompan=z='1.06':d=${totalFrames}:x='(iw-iw/zoom)*(1-on/${totalFrames})':y='${cy}':s=1920x1080:fps=${fps}`,
+        `zoompan=z='1.06':d=${totalFrames}:x='(iw-iw/zoom)*(1-on/${totalFrames})':y='${cy}':s=${S}:fps=${fps}`,
       ];
       filters.length = 0; // zoompan handles scaling
       filters.push(directions[index % directions.length]);
@@ -493,42 +500,67 @@ class AIVideoGenerator {
   }
 
   /**
-   * Build a full-frame (1920x1080) TRANSPARENT PNG containing just the section
-   * title in a lower-third bar. This is composited over the clip AFTER zoompan
-   * (via ffmpeg overlay), so the text is never cropped/zoomed by Ken Burns.
+   * Build a full-frame TRANSPARENT PNG containing just the section title in a
+   * title-safe band. Composited over the clip AFTER zoompan (via ffmpeg
+   * overlay), so text is never cropped/zoomed by Ken Burns. Dimension-aware:
+   * landscape uses a lower-third; portrait (Shorts) places text higher and
+   * larger, clear of the Shorts UI that covers the bottom of the screen.
    * Returns the overlay path, or null if sharp is unavailable / no title.
    */
-  async _makeTextOverlay(sectionTitle, tempDir, index) {
+  async _makeTextOverlay(sectionTitle, tempDir, index, dims = {}) {
     if (!sharp || !sectionTitle) return null;
 
     try {
-      const W = 1920;
-      const H = 1080;
-      const fontSize = 52;
-      // Keep the text band well inside a "title-safe" area (~7% margin from the
-      // bottom edge) so it reads cleanly on all displays.
-      const bandHeight = 160;
-      const bandTop = H - bandHeight - 60;   // 60px above the very bottom
-      const textY = bandTop + bandHeight / 2 + fontSize / 3;
-      const safeTitle = this._escapeXml(
-        sectionTitle.length > 60 ? sectionTitle.slice(0, 57) + '...' : sectionTitle
-      );
+      const W = dims.width || 1920;
+      const H = dims.height || 1080;
+      const portrait = H > W;
+
+      // Portrait: bigger font, wrap to multiple lines, sit in the lower-middle
+      // (Shorts overlay buttons/caption sit along the very bottom & right).
+      const fontSize = portrait ? 64 : 52;
+      const maxChars = portrait ? 22 : 60;       // chars per line before wrap
+      const lineHeight = fontSize * 1.25;
+
+      // Word-wrap the title into lines that fit the width.
+      const words = String(sectionTitle).split(/\s+/);
+      const lines = [];
+      let cur = '';
+      for (const w of words) {
+        if ((cur + ' ' + w).trim().length > maxChars && cur) { lines.push(cur); cur = w; }
+        else { cur = (cur + ' ' + w).trim(); }
+      }
+      if (cur) lines.push(cur);
+      const safeLines = lines.slice(0, portrait ? 4 : 2).map(l => this._escapeXml(l));
+
+      const blockH = safeLines.length * lineHeight;
+      const pad = portrait ? 40 : 30;
+      const bandH = blockH + pad * 2;
+      // Landscape: lower third. Portrait: ~68% down (clear of Shorts UI bottom).
+      const bandTop = portrait ? Math.round(H * 0.66) : (H - bandH - 60);
+      const firstBaseline = bandTop + pad + fontSize;
+
+      const textEls = safeLines.map((line, i) => {
+        const y = firstBaseline + i * lineHeight;
+        return `
+          <text x="${W / 2}" y="${y}" text-anchor="middle"
+            font-family="Arial Black, Helvetica, sans-serif" font-size="${fontSize}" font-weight="900"
+            stroke="#000000" stroke-width="${portrait ? 6 : 5}" fill="#000000" paint-order="stroke">${line}</text>
+          <text x="${W / 2}" y="${y}" text-anchor="middle"
+            font-family="Arial Black, Helvetica, sans-serif" font-size="${fontSize}" font-weight="900"
+            fill="#FFFFFF">${line}</text>`;
+      }).join('');
 
       const svgOverlay = Buffer.from(`
         <svg width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">
           <defs>
             <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
               <stop offset="0%" stop-color="#000000" stop-opacity="0"/>
-              <stop offset="100%" stop-color="#000000" stop-opacity="0.78"/>
+              <stop offset="50%" stop-color="#000000" stop-opacity="${portrait ? 0.55 : 0.78}"/>
+              <stop offset="100%" stop-color="#000000" stop-opacity="${portrait ? 0.55 : 0.78}"/>
             </linearGradient>
           </defs>
-          <rect x="0" y="${bandTop}" width="${W}" height="${bandHeight + 60}" fill="url(#bg)"/>
-          <text x="${W / 2}" y="${textY}" text-anchor="middle"
-            font-family="Arial Black, Helvetica, sans-serif" font-size="${fontSize}" font-weight="900"
-            stroke="#000000" stroke-width="5" fill="#000000" paint-order="stroke">${safeTitle}</text>
-          <text x="${W / 2}" y="${textY}" text-anchor="middle"
-            font-family="Arial Black, Helvetica, sans-serif" font-size="${fontSize}" font-weight="900"
-            fill="#FFFFFF">${safeTitle}</text>
+          <rect x="0" y="${bandTop}" width="${W}" height="${bandH}" fill="url(#bg)"/>
+          ${textEls}
         </svg>
       `);
 
