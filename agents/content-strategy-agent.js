@@ -174,15 +174,58 @@ class ContentStrategyAgent {
     };
   }
 
+  static STOP_WORDS = new Set(['the', 'is', 'at', 'which', 'on', 'and', 'a', 'an', 'as', 'are', 'was', 'were', 'been', 'be', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should', 'may', 'might', 'must', 'can', 'i', 'you', 'he', 'she', 'it', 'we', 'they', 'what', 'who', 'when', 'where', 'why', 'how', 'all', 'each', 'every', 'both', 'few', 'more', 'most', 'other', 'some', 'such', 'no', 'nor', 'not', 'only', 'own', 'same', 'so', 'than', 'too', 'very', 'just', 'now', 'that', 'this', 'with', 'for', 'from', 'your', 'top', 'best']);
+
+  // Single-word keywords (used for trend scoring where words are map keys).
   extractKeywords(text) {
-    // Simple keyword extraction
-    const stopWords = ['the', 'is', 'at', 'which', 'on', 'and', 'a', 'an', 'as', 'are', 'was', 'were', 'been', 'be', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should', 'may', 'might', 'must', 'can', 'could', 'i', 'you', 'he', 'she', 'it', 'we', 'they', 'what', 'which', 'who', 'when', 'where', 'why', 'how', 'all', 'each', 'every', 'both', 'few', 'more', 'most', 'other', 'some', 'such', 'no', 'nor', 'not', 'only', 'own', 'same', 'so', 'than', 'too', 'very', 'can', 'will', 'just', 'should', 'now'];
-    
     return text
       .toLowerCase()
       .replace(/[^\w\s]/g, '')
       .split(/\s+/)
-      .filter(word => word.length > 3 && !stopWords.includes(word));
+      .filter(word => word.length > 3 && !ContentStrategyAgent.STOP_WORDS.has(word));
+  }
+
+  // SEO keyword PHRASES: real multi-word search terms (bigrams/trigrams) plus
+  // the strongest single words. This is what feeds video tags & description,
+  // so it must read like things people actually search - not "fifa, world, moments".
+  extractKeywordPhrases(text, limit = 12) {
+    const isStop = w => ContentStrategyAgent.STOP_WORDS.has(w);
+    const isNumeric = w => /^\d+$/.test(w);
+
+    // Break into clauses on stop words / numbers / punctuation so phrases don't
+    // span unrelated parts of a long marketing sentence (avoids fragments like
+    // "plays heart" bridging "unforgettable plays" and "heart stopping").
+    const clauses = text
+      .toLowerCase()
+      .replace(/[^\w\s]/g, ' ')
+      .split(/\s+/)
+      .reduce((acc, w) => {
+        if (!w || isStop(w) || isNumeric(w)) { acc.push([]); }
+        else { acc[acc.length - 1].push(w); }
+        return acc;
+      }, [[]])
+      .filter(c => c.length);
+
+    const phrases = [];
+    const seen = new Set();
+    const add = p => { const k = p.trim(); if (k && !seen.has(k)) { seen.add(k); phrases.push(k); } };
+
+    // One representative phrase per clause: the whole clause if it's a tidy
+    // 2-3 words, otherwise its leading 2-3 word phrase. Avoids overlapping
+    // sliding-window fragments from long marketing clauses.
+    for (const clause of clauses) {
+      const meaningful = clause.filter(w => w.length > 2);
+      if (meaningful.length >= 2) {
+        add(meaningful.slice(0, 3).join(' '));
+        if (meaningful.length >= 4) add(meaningful.slice(0, 2).join(' '));
+      }
+    }
+
+    // Supplement with strong single words (for tag breadth).
+    const singles = clauses.flat().filter(w => w.length > 3 && !isStop(w));
+    singles.forEach(add);
+
+    return phrases.slice(0, limit);
   }
 
   mergeTrendData(trends, competitors) {
@@ -248,7 +291,7 @@ class ContentStrategyAgent {
         angle,
         targetAudience,
         contentType,
-        keywords: this.extractKeywords(topic),
+        keywords: this.extractKeywordPhrases(`${topic} ${angle || ''}`),
         estimatedViews: this.predictViews(topic),
         bestPublishTime: this.calculateBestPublishTime(),
         competitorAnalysis: this.getCompetitorInsights(topic),

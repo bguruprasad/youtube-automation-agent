@@ -129,85 +129,87 @@ class SEOOptimizerAgent {
   }
 
   async generateDescription(script, strategy) {
-    // YouTube description limit: 5000 characters, first 125 shown in search
-    
+    // YouTube description limit: 5000 characters, first ~125 shown in search.
+    // Script fields like hook/callToAction are objects ({ text }, { subscribe }),
+    // so always extract the string form - never interpolate the object directly.
+    const sections = (script.mainContent && script.mainContent.sections) || [];
+    const keywords = (strategy.keywords || []).filter(Boolean);
+
     let description = '';
-    
-    // First 125 characters - most important for SEO
-    const hook = `${script.title} - In this video, you'll discover ${strategy.angle.toLowerCase()}.`;
-    description += hook + '\n\n';
-    
-    // Video overview
-    description += '📺 WHAT YOU\'LL LEARN:\n';
-    if (script.mainContent && script.mainContent.sections) {
-      script.mainContent.sections.slice(0, 5).forEach(section => {
-        if (section.title) {
-          description += `• ${section.title}\n`;
-        }
-      });
+
+    // --- First lines: the search-visible hook. Prefer the AI-written hook,
+    // fall back to a keyword-rich generated sentence. ---
+    const hookText = (script.hook && script.hook.text) ||
+      `${script.title} - ${strategy.angle || ''}`.trim();
+    description += hookText + '\n\n';
+
+    // A keyword-rich opening paragraph (front-loaded for SEO).
+    if (keywords.length) {
+      description += `In this video we cover ${keywords.slice(0, 5).join(', ')} `;
+      description += `- everything you need to know about ${strategy.topic}.\n\n`;
     }
-    description += '\n';
-    
-    // Timestamps/Chapters
-    description += '⏱️ TIMESTAMPS:\n';
-    description += '00:00 Introduction\n';
-    let timestamp = 20;
-    if (script.mainContent && script.mainContent.sections) {
-      script.mainContent.sections.forEach(section => {
+
+    // --- What you'll learn (real section titles) ---
+    const sectionTitles = sections.map(s => s.title).filter(Boolean);
+    if (sectionTitles.length) {
+      description += '📺 WHAT YOU\'LL LEARN:\n';
+      sectionTitles.slice(0, 8).forEach(t => { description += `• ${t}\n`; });
+      description += '\n';
+    }
+
+    // --- Timestamps from real section durations ---
+    if (sections.length) {
+      description += '⏱️ TIMESTAMPS:\n';
+      description += '00:00 Introduction\n';
+      let timestamp = 20;
+      sections.forEach(section => {
         const minutes = Math.floor(timestamp / 60);
         const seconds = timestamp % 60;
-        description += `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')} ${section.title || 'Section'}\n`;
+        const pad = n => n.toString().padStart(2, '0');
+        description += `${pad(minutes)}:${pad(seconds)} ${section.title || 'Section'}\n`;
         timestamp += section.duration || 60;
       });
+      description += '\n';
     }
-    description += '\n';
-    
-    // Keywords paragraph (SEO optimized)
+
+    // --- About paragraph (SEO keywords woven in) ---
     description += '📝 ABOUT THIS VIDEO:\n';
-    description += `This comprehensive guide on ${strategy.topic} covers everything you need to know. `;
-    description += `Whether you're a beginner or advanced, you'll find valuable insights about ${strategy.keywords.slice(0, 3).join(', ')}. `;
-    description += `Perfect for ${strategy.targetAudience}.\n\n`;
-    
-    // Links section
-    description += '🔗 USEFUL LINKS:\n';
-    description += `• Subscribe: [Your Channel URL]\n`;
-    description += `• Website: ${process.env.WEBSITE_URL || '[Your Website]'}\n`;
-    description += `• Social Media: ${process.env.SOCIAL_LINKS || '[Your Social Media]'}\n\n`;
-    
-    // Related videos
-    description += '📹 RELATED VIDEOS:\n';
-    description += '• [Related Video 1]\n';
-    description += '• [Related Video 2]\n';
-    description += '• [Related Video 3]\n\n';
-    
-    // Equipment/Tools (if applicable)
-    if (strategy.contentType === 'Tutorial') {
-      description += '🛠️ TOOLS & RESOURCES MENTIONED:\n';
-      description += '• [Tool/Resource 1]\n';
-      description += '• [Tool/Resource 2]\n\n';
+    description += `This video on ${strategy.topic} `;
+    if (keywords.length) {
+      description += `dives into ${keywords.slice(0, 3).join(', ')}. `;
     }
-    
-    // Contact/Business
-    description += '📧 BUSINESS INQUIRIES:\n';
-    description += `${process.env.BUSINESS_EMAIL || '[Your Business Email]'}\n\n`;
-    
-    // Tags/Hashtags
-    description += '🏷️ TAGS:\n';
+    if (strategy.targetAudience) {
+      description += `Made for ${strategy.targetAudience}. `;
+    }
+    description += 'Like and subscribe for more.\n\n';
+
+    // --- Call to action (use the real one from the script) ---
+    const cta = script.callToAction &&
+      (script.callToAction.subscribe || script.callToAction.text);
+    if (cta) {
+      description += cta + '\n\n';
+    }
+
+    // --- Optional links/contact: only emit when actually configured.
+    // (No more "[Your Website]" placeholder junk shipping to YouTube.) ---
+    const links = [];
+    if (process.env.WEBSITE_URL) links.push(`• Website: ${process.env.WEBSITE_URL}`);
+    if (process.env.SOCIAL_LINKS) links.push(`• Social: ${process.env.SOCIAL_LINKS}`);
+    if (links.length) {
+      description += '🔗 LINKS:\n' + links.join('\n') + '\n\n';
+    }
+    if (process.env.BUSINESS_EMAIL) {
+      description += `📧 Business inquiries: ${process.env.BUSINESS_EMAIL}\n\n`;
+    }
+
+    // --- Hashtags (SEO) ---
     const hashtags = await this.generateHashtags(strategy);
-    description += hashtags.join(' ') + '\n\n';
-    
-    // Disclaimer if needed
-    description += '⚠️ DISCLAIMER:\n';
-    description += 'This video is for educational purposes only.\n\n';
-    
-    // Copyright
-    description += `© ${new Date().getFullYear()} All Rights Reserved\n`;
-    
-    // Music credits if applicable
-    description += '\n🎵 MUSIC:\n';
-    description += 'Background music from YouTube Audio Library\n';
-    
-    return description;
+    if (hashtags.length) {
+      description += hashtags.join(' ') + '\n';
+    }
+
+    // Trim to YouTube's 5000-char hard limit.
+    return description.trim().slice(0, 5000);
   }
 
   async generateTags(script, strategy) {
