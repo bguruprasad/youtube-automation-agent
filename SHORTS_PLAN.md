@@ -14,7 +14,7 @@ Shorts, and Shorts repurposed from existing long videos. Output → `output/shor
       ai-video-generator.js become dimension-driven.
 - [x] 2. **Portrait-aware text overlay.** `_makeTextOverlay` takes dimensions; reposition
       the lower-third band + larger mobile font for 9:16.
-- [ ] 3. **Shorts config.** Env: SHORTS_IMAGE_QUALITY=low, SHORTS_IMAGE_SIZE=1024x1536,
+- [x] 3. **Shorts config.** Env: SHORTS_IMAGE_QUALITY=low, SHORTS_IMAGE_SIZE=1024x1536,
       SHORTS_RESOLUTION=1080x1920, SHORTS_MAX_DURATION=60. Portrait + quality params
       passed to gpt-image-1 (already supports `quality`).
 - [ ] 4. **Moments provider.** Curated evergreen football-moment pool (always on).

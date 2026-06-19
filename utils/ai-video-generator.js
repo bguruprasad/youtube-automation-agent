@@ -176,23 +176,23 @@ class AIVideoGenerator {
     return outputPath;
   }
 
-  async generateVisualAssets(prompt, style = "ethereal", count = 1) {
+  async generateVisualAssets(prompt, style = "ethereal", count = 1, imageOpts = {}) {
     this.logger.info(`Generating ${count} visual assets with style: ${style}`);
-    
+
     try {
       if (!this.openai) {
         return await this.simulateVisualAssets(prompt, style, count);
       }
 
       const enhancedPrompt = this.enhanceVisualPrompt(prompt, style);
-      
-      // Use gpt-image-1 (current OpenAI image model)
+
+      // Size/quality are overridable (Shorts use portrait + lower quality).
       const params = {
         model: "gpt-image-1",
         prompt: enhancedPrompt,
         n: 1,
-        size: "1536x1024", // landscape for video
-        quality: "medium"
+        size: imageOpts.size || "1536x1024", // default landscape for video
+        quality: imageOpts.quality || "medium"
       };
       const response = await this.openai.images.generate(params);
 
