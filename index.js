@@ -243,6 +243,70 @@ class YouTubeAutomationAgent {
       }
     });
 
+    // Upload a generated Short to YouTube (from output/shorts/<folder>).
+    this.app.post('/upload-short/:folder', async (req, res) => {
+      try {
+        const shortsConfig = require('./utils/shorts-config');
+        const folder = path.basename(req.params.folder);
+        const folderPath = path.join(__dirname, shortsConfig.outputDir, folder);
+        const privacy = (req.body && req.body.privacy) || undefined;
+        const force = !!(req.body && req.body.force);
+        const fsp = require('fs').promises;
+        const markerPath = path.join(folderPath, 'youtube_upload.json');
+        let existing = null;
+        try { existing = JSON.parse(await fsp.readFile(markerPath, 'utf8')); } catch {}
+        if (existing && !force) {
+          return res.status(409).json({ success: false, alreadyUploaded: true,
+            error: `Already uploaded (${existing.url}).`, uploaded: existing });
+        }
+        const result = await this.agents.publishing.uploadOutputFolder(folderPath, { privacyStatus: privacy });
+        res.json({ success: true, ...result });
+      } catch (error) {
+        this.logger.error('Short upload failed:', error);
+        res.status(500).json({ success: false, error: error.message });
+      }
+    });
+
+    // Serve files from a Short folder.
+    this.app.get('/short-file/:folder/:file', (req, res) => {
+      const shortsConfig = require('./utils/shorts-config');
+      const folder = path.basename(req.params.folder);
+      const file = path.basename(req.params.file);
+      res.sendFile(path.join(__dirname, shortsConfig.outputDir, folder, file));
+    });
+
+    // List generated Shorts (output/shorts/).
+    this.app.get('/shorts', async (req, res) => {
+      try {
+        const shortsConfig = require('./utils/shorts-config');
+        const fsp = require('fs').promises;
+        const shortsDir = path.join(__dirname, shortsConfig.outputDir);
+        const dirs = await fsp.readdir(shortsDir).catch(() => []);
+        const shorts = [];
+        for (const dir of dirs) {
+          try {
+            const dirPath = path.join(shortsDir, dir);
+            const script = JSON.parse(await fsp.readFile(path.join(dirPath, 'script.json'), 'utf8'));
+            const files = await fsp.readdir(dirPath);
+            const stat = await fsp.stat(dirPath);
+            let uploaded = null;
+            if (files.includes('youtube_upload.json')) {
+              try { uploaded = JSON.parse(await fsp.readFile(path.join(dirPath, 'youtube_upload.json'), 'utf8')); } catch {}
+            }
+            shorts.push({
+              folder: dir, title: script.title,
+              hasVideo: files.includes('video.mp4'),
+              modifiedAt: stat.mtimeMs, uploaded,
+            });
+          } catch {}
+        }
+        shorts.sort((a, b) => b.modifiedAt - a.modifiedAt);
+        res.json({ success: true, shorts });
+      } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+      }
+    });
+
     // Mode A - Fresh single-moment Short. Optional body: { moment } to force a
     // specific subject; otherwise the moments provider picks one (curated, or
     // recent via football-data.org when configured).

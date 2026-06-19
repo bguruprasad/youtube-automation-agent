@@ -293,6 +293,13 @@
     .btn-upload:hover:not(:disabled) { background: #a32622; border-color: #a32622; }
     .btn-upload:disabled { opacity: 0.7; cursor: default; }
     .upload-status { font-size: 0.78rem; word-break: break-all; }
+    .btn-short {
+      background: #5b21b6; color: #fff; border: 1px solid #5b21b6;
+    }
+    .btn-short:hover:not(:disabled) { background: #4c1d95; border-color: #4c1d95; }
+    .btn-short:disabled { opacity: 0.7; cursor: default; }
+    .short-status, .short-up-status { font-size: 0.78rem; word-break: break-all; }
+    .short-privacy { font-size: 0.78rem; padding: 4px 6px; border-radius: 4px; background: var(--surface); color: var(--text); border: 1px solid var(--border); }
     .privacy-select {
       font-size: 0.78rem; padding: 4px 6px; border-radius: 4px;
       background: var(--surface); color: var(--text);
@@ -371,6 +378,23 @@
       </div>
       <div id="outputs-container">
         <div class="empty-state">Loading outputs...</div>
+      </div>
+    </div>
+
+    <!-- YouTube Shorts (vertical) -->
+    <div class="section">
+      <div class="section-title" style="justify-content:space-between;">
+        <span>📱 Football Shorts (vertical 9:16)</span>
+        <button class="btn btn-sm btn-outline" onclick="loadShorts()">Refresh</button>
+      </div>
+      <div class="output-actions" style="margin-bottom:12px;">
+        <input id="short-moment" type="text" placeholder="Optional: specific moment (else auto-picked)"
+          style="flex:1;min-width:220px;padding:8px;border-radius:4px;background:var(--surface);color:var(--text);border:1px solid var(--border);" />
+        <button class="btn btn-sm btn-short" onclick="generateShort(this)">⚡ Generate Short</button>
+        <span id="short-gen-status" style="font-size:0.8rem;"></span>
+      </div>
+      <div id="shorts-container">
+        <div class="empty-state">Loading shorts...</div>
       </div>
     </div>
   </div>
@@ -562,6 +586,12 @@
               <option value="private">Private</option>
             </select>`;
 
+          // "Make Short" is available for any output that has a video to repurpose.
+          const makeShortBtn = o.hasVideo
+            ? `<button class="btn btn-sm btn-short" data-folder="${folderAttr}" onclick="makeShort(this)">✂️ Make Short</button>
+               <span class="short-status" data-folder="${folderAttr}"></span>`
+            : '';
+
           let actions;
           if (!o.hasVideo) {
             actions = `<button class="btn btn-sm btn-outline" disabled title="No video.mp4 yet">No video</button>`;
@@ -572,11 +602,13 @@
               <a href="${escHtml(up.url)}" target="_blank" class="btn btn-sm btn-outline">View on YouTube</a>
               ${privacySelect}
               <button class="btn btn-sm btn-outline" data-folder="${folderAttr}" onclick="uploadToYouTube(this, true)">Re-upload (new copy)</button>
+              ${makeShortBtn}
               <span class="upload-status" data-folder="${folderAttr}"></span>`;
           } else {
             actions = `
               ${privacySelect}
               <button class="btn btn-sm btn-upload" data-folder="${folderAttr}" onclick="uploadToYouTube(this, false)">⬆ Upload to YouTube</button>
+              ${makeShortBtn}
               <span class="upload-status" data-folder="${folderAttr}"></span>`;
           }
 
@@ -593,6 +625,67 @@
         }).join('') + '</div>';
       } catch (err) {
         container.innerHTML = `<div class="empty-state" style="color:var(--red)">Failed to load outputs: ${escHtml(err.message)}</div>`;
+      }
+    }
+
+    async function loadShorts() {
+      const container = document.getElementById('shorts-container');
+      if (!container) return;
+      try {
+        const res = await fetch('/shorts');
+        const data = await res.json();
+        if (!data.success || !data.shorts?.length) {
+          container.innerHTML = '<div class="empty-state">No shorts yet. Generate one above or use "Make Short" on a video.</div>';
+          return;
+        }
+        container.innerHTML = '<div class="outputs-list">' + data.shorts.map(s => {
+          const f = escHtml(s.folder);
+          const up = s.uploaded;
+          const videoLink = s.hasVideo
+            ? `<a href="/short-file/${encodeURIComponent(s.folder)}/video.mp4" target="_blank" class="file-badge exists">▶ video</a>` : '';
+          let act;
+          if (up) {
+            act = `<span class="uploaded-badge">✅ Uploaded (${escHtml(up.privacy||'')})</span>
+              <a href="${escHtml(up.url)}" target="_blank" class="btn btn-sm btn-outline">View</a>`;
+          } else {
+            act = `<select class="short-privacy" data-folder="${f}">
+                <option value="public">Public</option><option value="unlisted" selected>Unlisted</option><option value="private">Private</option>
+              </select>
+              <button class="btn btn-sm btn-upload" data-folder="${f}" onclick="uploadShort(this)">⬆ Upload Short</button>`;
+          }
+          return `<div class="output-item">
+              <div class="output-info"><h4>📱 ${escHtml(s.title || s.folder)}</h4>
+                <div class="folder-name">${f}</div></div>
+              <div class="output-files">${videoLink}</div>
+              <div class="output-actions">${act}<span class="short-up-status" data-folder="${f}"></span></div>
+            </div>`;
+        }).join('') + '</div>';
+      } catch (err) {
+        container.innerHTML = `<div class="empty-state" style="color:var(--red)">Failed to load shorts: ${escHtml(err.message)}</div>`;
+      }
+    }
+
+    async function uploadShort(btn) {
+      const folder = btn.getAttribute('data-folder');
+      const statusEl = document.querySelector(`.short-up-status[data-folder="${CSS.escape(folder)}"]`);
+      const sel = document.querySelector(`.short-privacy[data-folder="${CSS.escape(folder)}"]`);
+      const privacy = sel ? sel.value : 'unlisted';
+      if (!confirm('Upload this Short to YouTube as ' + privacy.toUpperCase() + '?')) return;
+      btn.disabled = true; const original = btn.textContent; btn.textContent = '⏳ Uploading...';
+      try {
+        const res = await fetch('/upload-short/' + encodeURIComponent(folder), {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ privacy })
+        });
+        const data = await res.json();
+        if (data.success) {
+          btn.textContent = '✅ Uploaded';
+          if (statusEl) { statusEl.style.color = 'var(--green,#3fb950)'; statusEl.innerHTML = ` <a href="${escHtml(data.url)}" target="_blank">${escHtml(data.url)}</a>`; }
+          setTimeout(loadShorts, 1500);
+        } else { throw new Error(data.error || 'Failed'); }
+      } catch (err) {
+        btn.disabled = false; btn.textContent = original;
+        if (statusEl) { statusEl.style.color = 'var(--red,#f85149)'; statusEl.textContent = ' ❌ ' + err.message; }
       }
     }
 
@@ -645,6 +738,59 @@
       }
     }
 
+    async function makeShort(btn) {
+      const folder = btn.getAttribute('data-folder');
+      const statusEl = document.querySelector(`.short-status[data-folder="${CSS.escape(folder)}"]`);
+      if (!confirm('Create a vertical YouTube Short from this video?')) return;
+      btn.disabled = true;
+      const original = btn.textContent;
+      btn.textContent = '✂️ Creating...';
+      if (statusEl) { statusEl.textContent = ''; statusEl.style.color = ''; }
+      try {
+        const res = await fetch('/short-from/' + encodeURIComponent(folder), { method: 'POST' });
+        const data = await res.json();
+        if (data.success) {
+          btn.textContent = '✅ Short created';
+          if (statusEl) {
+            statusEl.style.color = 'var(--green, #3fb950)';
+            statusEl.textContent = ' → ' + data.folder + ' (see Shorts list)';
+          }
+          if (typeof loadShorts === 'function') setTimeout(loadShorts, 1000);
+        } else { throw new Error(data.error || 'Failed'); }
+      } catch (err) {
+        btn.disabled = false; btn.textContent = original;
+        if (statusEl) { statusEl.style.color = 'var(--red,#f85149)'; statusEl.textContent = ' ❌ ' + err.message; }
+      }
+    }
+
+    async function generateShort(btn) {
+      const moment = (document.getElementById('short-moment')?.value || '').trim();
+      btn.disabled = true;
+      const original = btn.textContent;
+      btn.textContent = '⏳ Generating Short...';
+      const statusEl = document.getElementById('short-gen-status');
+      if (statusEl) { statusEl.textContent = ''; statusEl.style.color = ''; }
+      try {
+        const res = await fetch('/generate-short', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(moment ? { moment } : {})
+        });
+        const data = await res.json();
+        if (data.success) {
+          if (statusEl) {
+            statusEl.style.color = 'var(--green,#3fb950)';
+            statusEl.textContent = `✅ Created "${data.title}" (${data.folder})`;
+          }
+          if (typeof loadShorts === 'function') setTimeout(loadShorts, 1000);
+        } else { throw new Error(data.error || 'Failed'); }
+      } catch (err) {
+        if (statusEl) { statusEl.style.color = 'var(--red,#f85149)'; statusEl.textContent = '❌ ' + err.message; }
+      } finally {
+        btn.disabled = false; btn.textContent = original;
+      }
+    }
+
     // --- Helpers ---
     function escHtml(str) {
       const d = document.createElement('div');
@@ -659,6 +805,7 @@
     // --- Init ---
     checkHealth();
     loadOutputs();
+    loadShorts();
     setInterval(checkHealth, 30000);
   </script>
 </body>

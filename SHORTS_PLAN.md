@@ -27,7 +27,7 @@ Shorts, and Shorts repurposed from existing long videos. Output → `output/shor
       video's images/narration/SEO, fit to vertical, ≤60s. Cheapest to iterate first.
 - [x] 7. **Mode A — Fresh Short** (`POST /generate-short`). Moments provider → short
       script → 1-2 portrait low-q images → TTS → vertical assembly → SEO + #Shorts.
-- [ ] 8. **Dashboard.** "Generate Short" control + "✂️ Make Short" button per existing
+- [x] 8. **Dashboard.** "Generate Short" control + "✂️ Make Short" button per existing
       output. Shorts listed from output/shorts/ with their own youtube_upload.json so
       the duplicate-guard + privacy dropdown work.
 - [ ] 9. **Upload integration.** Reuse uploadOutputFolder (vertical ≤60s + #Shorts =
