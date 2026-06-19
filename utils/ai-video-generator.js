@@ -332,20 +332,29 @@ class AIVideoGenerator {
         const clipDuration = sectionDurations[i] || Math.floor(duration / validAssets.length);
         const sectionTitle = this._getSectionTitle(script, i);
         
-        // Burn section title text onto image via sharp (ffmpeg drawtext not available)
-        const annotatedImage = await this._burnTextOnImage(validAssets[i], sectionTitle, tempDir, i);
-        
-        // Build per-clip filter with Ken Burns, fades
+        // Build the Ken Burns / fade filter that operates on the raw image.
         const filter = this._buildClipFilter(i, validAssets.length, clipDuration, sectionTitle, videoStyle);
-        
-        const cmd = `ffmpeg -y -loop 1 -i "${annotatedImage}" -t ${clipDuration} ` +
-          `-vf "${filter}" -c:v libx264 -pix_fmt yuv420p -r 30 "${clipPath}"`;
+
+        // Generate a full-frame transparent text overlay and composite it AFTER
+        // zoompan via ffmpeg overlay, so the title is never cropped by the zoom.
+        const textOverlay = await this._makeTextOverlay(sectionTitle, tempDir, i);
+
+        let cmd;
+        if (textOverlay) {
+          // [0]=looped image -> kenburns -> [bg]; overlay [1]=text PNG on top.
+          cmd = `ffmpeg -y -loop 1 -i "${validAssets[i]}" -i "${textOverlay}" -t ${clipDuration} ` +
+            `-filter_complex "[0:v]${filter}[bg];[bg][1:v]overlay=0:0:format=auto" ` +
+            `-c:v libx264 -pix_fmt yuv420p -r 30 "${clipPath}"`;
+        } else {
+          cmd = `ffmpeg -y -loop 1 -i "${validAssets[i]}" -t ${clipDuration} ` +
+            `-vf "${filter}" -c:v libx264 -pix_fmt yuv420p -r 30 "${clipPath}"`;
+        }
         try {
           execSync(cmd, { stdio: 'pipe', timeout: 60000 });
           clipPaths.push(clipPath);
         } catch (e) {
           this.logger.warn(`Clip ${i} generation failed, using simple scale`);
-          const fallback = `ffmpeg -y -loop 1 -i "${annotatedImage}" -t ${clipDuration} ` +
+          const fallback = `ffmpeg -y -loop 1 -i "${validAssets[i]}" -t ${clipDuration} ` +
             `-vf "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=30" ` +
             `-c:v libx264 -pix_fmt yuv420p "${clipPath}"`;
           execSync(fallback, { stdio: 'pipe', timeout: 60000 });
@@ -431,17 +440,28 @@ class AIVideoGenerator {
     // Scale to fit 1920x1080
     filters.push('scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black');
 
-    // Ken Burns effect (slow zoom/pan) -- varies direction per clip
+    // Ken Burns effect (slow zoom/pan) -- varies direction per clip.
+    // IMPORTANT: zoompan crops toward the center as it zooms, so we keep the
+    // max zoom modest (1.10) and ALWAYS start at zoom=1.0 on the first frame.
+    // The 'on' (output frame number) is 0-based; the classic zoompan bug is
+    // that 'zoom' resets to 1 each frame unless seeded, so we drive zoom from
+    // 'on' directly instead of accumulating, guaranteeing a clean 1.0 start.
     if (style.zoompan) {
+      const zMax = 1.10;
+      const zStep = (zMax - 1.0) / Math.max(1, totalFrames - 1);
+      const zoomIn  = `1.0+${zStep.toFixed(6)}*on`;                 // 1.0 -> zMax
+      const zoomOut = `${zMax}-${zStep.toFixed(6)}*on`;            // zMax -> 1.0
+      const cx = `iw/2-(iw/zoom/2)`;
+      const cy = `ih/2-(ih/zoom/2)`;
       const directions = [
-        // Slow zoom in
-        `zoompan=z='min(zoom+0.0005,1.15)':d=${totalFrames}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1920x1080:fps=${fps}`,
-        // Slow zoom out
-        `zoompan=z='if(eq(on,1),1.15,max(zoom-0.0005,1.0))':d=${totalFrames}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1920x1080:fps=${fps}`,
-        // Pan left to right
-        `zoompan=z='1.08':d=${totalFrames}:x='if(eq(on,1),0,min(x+1,(iw-iw/zoom)))':y='ih/2-(ih/zoom/2)':s=1920x1080:fps=${fps}`,
-        // Pan right to left
-        `zoompan=z='1.08':d=${totalFrames}:x='if(eq(on,1),(iw-iw/zoom),max(x-1,0))':y='ih/2-(ih/zoom/2)':s=1920x1080:fps=${fps}`,
+        // Slow zoom in (centered) - starts at full frame, text visible at start
+        `zoompan=z='min(${zoomIn},${zMax})':d=${totalFrames}:x='${cx}':y='${cy}':s=1920x1080:fps=${fps}`,
+        // Slow zoom out (centered) - ends at full frame
+        `zoompan=z='max(${zoomOut},1.0)':d=${totalFrames}:x='${cx}':y='${cy}':s=1920x1080:fps=${fps}`,
+        // Gentle pan left->right at a fixed modest zoom
+        `zoompan=z='1.06':d=${totalFrames}:x='(iw-iw/zoom)*on/${totalFrames}':y='${cy}':s=1920x1080:fps=${fps}`,
+        // Gentle pan right->left at a fixed modest zoom
+        `zoompan=z='1.06':d=${totalFrames}:x='(iw-iw/zoom)*(1-on/${totalFrames})':y='${cy}':s=1920x1080:fps=${fps}`,
       ];
       filters.length = 0; // zoompan handles scaling
       filters.push(directions[index % directions.length]);
@@ -455,46 +475,54 @@ class AIVideoGenerator {
   }
 
   /**
-   * Burn section title text onto an image using sharp SVG overlay.
-   * Returns path to the annotated image (or original if sharp unavailable).
+   * Build a full-frame (1920x1080) TRANSPARENT PNG containing just the section
+   * title in a lower-third bar. This is composited over the clip AFTER zoompan
+   * (via ffmpeg overlay), so the text is never cropped/zoomed by Ken Burns.
+   * Returns the overlay path, or null if sharp is unavailable / no title.
    */
-  async _burnTextOnImage(imagePath, sectionTitle, tempDir, index) {
-    if (!sharp || !sectionTitle) return imagePath;
+  async _makeTextOverlay(sectionTitle, tempDir, index) {
+    if (!sharp || !sectionTitle) return null;
 
     try {
-      const meta = await sharp(imagePath).metadata();
-      const W = meta.width || 1920;
-      const H = meta.height || 1080;
-      const fontSize = 48;
-      const safeTitle = this._escapeXml(sectionTitle.length > 60 ? sectionTitle.slice(0, 57) + '...' : sectionTitle);
+      const W = 1920;
+      const H = 1080;
+      const fontSize = 52;
+      // Keep the text band well inside a "title-safe" area (~7% margin from the
+      // bottom edge) so it reads cleanly on all displays.
+      const bandHeight = 160;
+      const bandTop = H - bandHeight - 60;   // 60px above the very bottom
+      const textY = bandTop + bandHeight / 2 + fontSize / 3;
+      const safeTitle = this._escapeXml(
+        sectionTitle.length > 60 ? sectionTitle.slice(0, 57) + '...' : sectionTitle
+      );
 
       const svgOverlay = Buffer.from(`
         <svg width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">
           <defs>
             <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
               <stop offset="0%" stop-color="#000000" stop-opacity="0"/>
-              <stop offset="60%" stop-color="#000000" stop-opacity="0.7"/>
+              <stop offset="100%" stop-color="#000000" stop-opacity="0.78"/>
             </linearGradient>
           </defs>
-          <rect x="0" y="${H - 140}" width="${W}" height="140" fill="url(#bg)"/>
-          <text x="${W / 2}" y="${H - 50}" text-anchor="middle"
+          <rect x="0" y="${bandTop}" width="${W}" height="${bandHeight + 60}" fill="url(#bg)"/>
+          <text x="${W / 2}" y="${textY}" text-anchor="middle"
             font-family="Arial Black, Helvetica, sans-serif" font-size="${fontSize}" font-weight="900"
-            stroke="#000000" stroke-width="4" fill="#000000" paint-order="stroke">${safeTitle}</text>
-          <text x="${W / 2}" y="${H - 50}" text-anchor="middle"
+            stroke="#000000" stroke-width="5" fill="#000000" paint-order="stroke">${safeTitle}</text>
+          <text x="${W / 2}" y="${textY}" text-anchor="middle"
             font-family="Arial Black, Helvetica, sans-serif" font-size="${fontSize}" font-weight="900"
             fill="#FFFFFF">${safeTitle}</text>
         </svg>
       `);
 
-      const outPath = path.join(tempDir, `annotated_${index}.png`);
-      await sharp(imagePath)
+      const outPath = path.join(tempDir, `textoverlay_${index}.png`);
+      await sharp({ create: { width: W, height: H, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } } })
         .composite([{ input: svgOverlay, top: 0, left: 0 }])
         .png()
         .toFile(outPath);
       return outPath;
     } catch (e) {
-      this.logger.warn(`Text burn failed for clip ${index}: ${e.message}`);
-      return imagePath;
+      this.logger.warn(`Text overlay failed for clip ${index}: ${e.message}`);
+      return null;
     }
   }
 
