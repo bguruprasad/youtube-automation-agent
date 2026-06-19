@@ -801,7 +801,7 @@ class AIVideoGenerator {
     // Estimate duration based on word count (average 150 words per minute)
     let totalWords = 0;
     
-    if (script.hook) totalWords += script.hook.text.split(' ').length;
+    if (script.hook && script.hook.text) totalWords += script.hook.text.split(' ').length;
     if (script.introduction) {
       totalWords += (script.introduction.greeting || '').split(' ').length;
       totalWords += (script.introduction.topicIntro || '').split(' ').length;
@@ -825,12 +825,17 @@ class AIVideoGenerator {
       });
     }
     
-    if (script.conclusion) {
+    if (script.conclusion && script.conclusion.finalThought) {
       totalWords += script.conclusion.finalThought.split(' ').length;
     }
-    
-    // Convert to duration (150 words per minute)
-    return Math.max(30, Math.ceil((totalWords / 150) * 60));
+
+    // Shorts cap their own duration; respect an explicit numeric script.duration.
+    const wordDuration = Math.max(30, Math.ceil((totalWords / 150) * 60));
+    if (script.format === 'short') {
+      const cap = (script.duration && Number.isFinite(script.duration)) ? script.duration : 58;
+      return Math.min(wordDuration, cap);
+    }
+    return wordDuration;
   }
 
   async addAudioToVideo(videoPath, audioPath, outputPath) {
