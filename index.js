@@ -193,6 +193,21 @@ class YouTubeAutomationAgent {
         res.status(500).json({ success: false, error: error.message });
       }
     });
+
+    // Upload a specific generated output folder straight to YouTube (used by
+    // the dashboard "Upload" button). Optional body: { privacy: 'unlisted' }.
+    this.app.post('/upload/:folder', async (req, res) => {
+      try {
+        const folder = path.basename(req.params.folder); // prevent path traversal
+        const folderPath = path.join(__dirname, 'output', folder);
+        const privacy = (req.body && req.body.privacy) || undefined;
+        const result = await this.agents.publishing.uploadOutputFolder(folderPath, { privacyStatus: privacy });
+        res.json({ success: true, ...result });
+      } catch (error) {
+        this.logger.error('Dashboard upload failed:', error);
+        res.status(500).json({ success: false, error: error.message });
+      }
+    });
   }
 
   async generateContent(topic = null, style = null, length = 'medium') {

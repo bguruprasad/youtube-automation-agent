@@ -278,6 +278,22 @@
       flex-wrap: wrap;
     }
 
+    .output-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 8px;
+      flex-wrap: wrap;
+    }
+    .btn-upload {
+      background: #c4302b;
+      color: #fff;
+      border: 1px solid #c4302b;
+    }
+    .btn-upload:hover:not(:disabled) { background: #a32622; border-color: #a32622; }
+    .btn-upload:disabled { opacity: 0.7; cursor: default; }
+    .upload-status { font-size: 0.78rem; word-break: break-all; }
+
     .file-badge {
       font-size: 0.72rem;
       padding: 3px 8px;
@@ -531,6 +547,11 @@
           if (o.hasVideo) indicators.push('🎥');
           if (o.hasThumbnail) indicators.push('🖼');
 
+          const folderAttr = escHtml(o.folder);
+          const uploadBtn = o.hasVideo
+            ? `<button class="btn btn-sm btn-upload" data-folder="${folderAttr}" onclick="uploadToYouTube(this)">⬆ Upload to YouTube</button>`
+            : `<button class="btn btn-sm btn-outline" disabled title="No video.mp4 yet">No video</button>`;
+
           return `
             <div class="output-item">
               <div class="output-info">
@@ -538,11 +559,49 @@
                 <div class="folder-name">${escHtml(o.folder)}</div>
               </div>
               <div class="output-files">${fileLinks}</div>
+              <div class="output-actions">
+                ${uploadBtn}
+                <span class="upload-status" data-folder="${folderAttr}"></span>
+              </div>
             </div>
           `;
         }).join('') + '</div>';
       } catch (err) {
         container.innerHTML = `<div class="empty-state" style="color:var(--red)">Failed to load outputs: ${escHtml(err.message)}</div>`;
+      }
+    }
+
+    async function uploadToYouTube(btn) {
+      const folder = btn.getAttribute('data-folder');
+      const statusEl = document.querySelector(`.upload-status[data-folder="${CSS.escape(folder)}"]`);
+      if (!confirm('Upload this video to YouTube as UNLISTED?')) return;
+      btn.disabled = true;
+      const original = btn.textContent;
+      btn.textContent = '⏳ Uploading...';
+      if (statusEl) { statusEl.textContent = ''; statusEl.style.color = ''; }
+      try {
+        const res = await fetch('/upload/' + encodeURIComponent(folder), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ privacy: 'unlisted' })
+        });
+        const data = await res.json();
+        if (data.success) {
+          btn.textContent = '✅ Uploaded';
+          if (statusEl) {
+            statusEl.style.color = 'var(--green, #3fb950)';
+            statusEl.innerHTML = ` <a href="${escHtml(data.url)}" target="_blank">${escHtml(data.url)}</a>`;
+          }
+        } else {
+          throw new Error(data.error || 'Upload failed');
+        }
+      } catch (err) {
+        btn.disabled = false;
+        btn.textContent = original;
+        if (statusEl) {
+          statusEl.style.color = 'var(--red, #f85149)';
+          statusEl.textContent = ' ❌ ' + err.message;
+        }
       }
     }
 

@@ -124,6 +124,64 @@ class PublishingSchedulingAgent {
     }
   }
 
+  /**
+   * Upload a generated output folder (output/<folder>/) directly to YouTube.
+   * Builds SEO title/description/tags from the folder's script.json and reuses
+   * the verified uploadToYouTube() path. Returns { videoId, url }.
+   */
+  async uploadOutputFolder(folderPath, { privacyStatus } = {}) {
+    const path = require('path');
+    const script = JSON.parse(await fsPromises.readFile(path.join(folderPath, 'script.json'), 'utf8'));
+
+    const videoPath = path.join(folderPath, 'video.mp4');
+    if (!fs.existsSync(videoPath)) {
+      throw new Error('No video.mp4 in output folder; generate the video first.');
+    }
+
+    // Build SEO metadata from the script (same generator the pipeline uses).
+    const strategy = (script.metadata && script.metadata.strategy) || {
+      topic: script.title, angle: '', keywords: script.keywords || [],
+      targetAudience: '', contentType: 'List'
+    };
+    let description = '';
+    let tags = script.keywords || [];
+    try {
+      const { SEOOptimizerAgent } = require('./seo-optimizer-agent');
+      const seo = Object.create(SEOOptimizerAgent.prototype);
+      description = await seo.generateDescription(script, strategy);
+      tags = await seo.generateTags(script, strategy);
+    } catch (e) {
+      this.logger.warn(`SEO generation fell back to minimal metadata: ${e.message}`);
+      description = (script.hook && script.hook.text) || script.title;
+    }
+
+    const thumbPath = path.join(folderPath, 'thumbnail.png');
+    const capPath = path.join(folderPath, 'captions.srt');
+    const scheduleEntry = {
+      id: 'folder-' + Date.now(),
+      // No publishTime: we publish immediately (publishAt requires privacy=private).
+      metadata: {
+        video: { path: videoPath, simulated: false },
+        thumbnail: fs.existsSync(thumbPath) ? { path: thumbPath } : null,
+        captions: fs.existsSync(capPath) ? { path: capPath } : null,
+        seo: {
+          title: (script.title || 'Untitled').slice(0, 100),
+          description,
+          tags: Array.isArray(tags) ? tags.slice(0, 30) : [],
+          metadata: { category: 24, language: 'en' } // 24 = Entertainment
+        }
+      }
+    };
+
+    if (privacyStatus) {
+      // Temporarily override the env default for this upload.
+      scheduleEntry._privacyOverride = privacyStatus;
+    }
+
+    const result = await this.uploadToYouTube(scheduleEntry);
+    return { videoId: result.id, url: `https://www.youtube.com/watch?v=${result.id}` };
+  }
+
   async uploadToYouTube(scheduleEntry) {
     const { metadata } = scheduleEntry;
     
@@ -147,8 +205,12 @@ class PublishingSchedulingAgent {
         defaultAudioLanguage: metadata.seo.metadata.language
       },
       status: {
-        privacyStatus: process.env.DEFAULT_PRIVACY_STATUS || 'public',
-        publishAt: scheduleEntry.publishTime,
+        privacyStatus: scheduleEntry._privacyOverride || process.env.DEFAULT_PRIVACY_STATUS || 'public',
+        // publishAt is only valid when privacyStatus is 'private'; omit otherwise
+        // (YouTube rejects publishAt for public/unlisted uploads).
+        ...(scheduleEntry.publishTime &&
+            (scheduleEntry._privacyOverride || process.env.DEFAULT_PRIVACY_STATUS) === 'private'
+            ? { publishAt: scheduleEntry.publishTime } : {}),
         selfDeclaredMadeForKids: false
       }
     };
