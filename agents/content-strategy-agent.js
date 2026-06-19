@@ -2,6 +2,29 @@ const axios = require('axios');
 const OpenAI = require('openai');
 const { Logger } = require('../utils/logger');
 
+// Niche constraint for the channel. Set CHANNEL_NICHE to change/disable.
+// 'football' locks all generated content to football/soccer.
+const CHANNEL_NICHE = (process.env.CHANNEL_NICHE || 'football').toLowerCase();
+
+// Curated evergreen football topic pool for unattended (auto-pick) generation.
+const FOOTBALL_TOPIC_POOL = [
+  'Greatest Football Goals of All Time',
+  'Most Unforgettable World Cup Moments',
+  'Greatest Comebacks in Football History',
+  'Best Football Free Kicks Ever Scored',
+  'Most Iconic Football Celebrations',
+  'Greatest Champions League Moments',
+  'Best Football Dribblers of All Time',
+  'Most Dramatic Last-Minute Goals',
+  'Greatest Football Rivalries Explained',
+  'Best Goalkeeper Saves in Football History',
+  'Most Shocking Football Upsets Ever',
+  'Greatest Football Players of All Time',
+  'Best Solo Goals in Football History',
+  'Most Memorable Penalty Shootouts',
+  'Greatest World Cup Final Moments'
+];
+
 class ContentStrategyAgent {
   constructor(db, credentials) {
     this.db = db;
@@ -11,6 +34,29 @@ class ContentStrategyAgent {
     this.competitorData = [];
     this.contentCalendar = [];
     this.openai = null;
+    this.niche = CHANNEL_NICHE;
+  }
+
+  // True when this channel is locked to a single niche.
+  get nicheLocked() { return this.niche && this.niche !== 'none' && this.niche !== 'general'; }
+
+  // Ensure a topic is on-niche. For a niche-locked channel, an off-topic
+  // request is reframed so the channel stays consistent (e.g. football-only).
+  _applyNiche(topic) {
+    if (!this.nicheLocked) return topic;
+    const t = (topic || '').toLowerCase();
+    const footballTerms = ['football', 'soccer', 'world cup', 'champions league',
+      'premier league', 'la liga', 'goal', 'striker', 'midfield', 'fifa',
+      'messi', 'ronaldo', 'penalty', 'free kick', 'goalkeeper'];
+    if (this.niche === 'football' && footballTerms.some(w => t.includes(w))) {
+      return topic; // already football
+    }
+    if (this.niche === 'football') {
+      // Reframe an off-niche request into a football angle rather than rejecting.
+      this.logger.warn(`Off-niche topic "${topic}" reframed to football (channel is football-only).`);
+      return `${topic} in Football`;
+    }
+    return topic;
   }
 
   async initialize() {
@@ -270,10 +316,10 @@ class ContentStrategyAgent {
       let topic, angle, targetAudience, contentType;
 
       if (requestedTopic) {
-        topic = requestedTopic;
+        topic = this._applyNiche(requestedTopic);
         angle = await this.generateAngle(topic);
       } else {
-        // Select from trending topics
+        // Select from trending topics (constrained to the channel niche)
         const selectedTopic = this.selectOptimalTopic();
         topic = selectedTopic.topic;
         angle = await this.generateAngle(topic);
@@ -310,9 +356,19 @@ class ContentStrategyAgent {
   }
 
   selectOptimalTopic() {
-    // Use scoring algorithm to select best topic
     const recentTopics = this.getRecentTopics();
-    
+
+    // Niche-locked channels pick from the curated niche pool so unattended
+    // (daily-automation) runs never drift off-topic.
+    if (this.nicheLocked && this.niche === 'football') {
+      const fresh = FOOTBALL_TOPIC_POOL.filter(t => !recentTopics.includes(t));
+      const pool = fresh.length ? fresh : FOOTBALL_TOPIC_POOL;
+      const topic = pool[Math.floor(Math.random() * pool.length)];
+      this.logger.info(`Selected football topic: ${topic}`);
+      return { topic, score: 1 };
+    }
+
+    // Use scoring algorithm to select best topic
     const scoredTopics = this.trendingTopics
       .filter(topic => !recentTopics.includes(topic.topic))
       .map(topic => ({
@@ -320,18 +376,23 @@ class ContentStrategyAgent {
         finalScore: topic.score * this.getSeasonalMultiplier(topic.topic) * this.getAudienceMultiplier(topic.topic)
       }));
 
-    return scoredTopics[0] || { topic: 'Technology Trends', score: 1 };
+    const fallbackTopic = this.nicheLocked && this.niche === 'football'
+      ? FOOTBALL_TOPIC_POOL[0] : 'Technology Trends';
+    return scoredTopics[0] || { topic: fallbackTopic, score: 1 };
   }
 
   async generateAngle(topic) {
     // Try AI-powered angle generation
     if (this.openai) {
       try {
+        const nicheHint = this.nicheLocked && this.niche === 'football'
+          ? ' This is a FOOTBALL (soccer) channel - the angle MUST be about football/soccer.'
+          : '';
         const response = await this.openai.chat.completions.create({
           model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
           messages: [
-            { role: 'system', content: 'You are a YouTube content strategist. Generate a single compelling video angle/title for the given topic. Return only the angle text, nothing else.' },
-            { role: 'user', content: `Generate a unique, engaging video angle for the topic: "${topic}". Make it specific and clickworthy without being misleading.` }
+            { role: 'system', content: `You are a YouTube content strategist. Generate a single compelling video angle/title for the given topic. Return only the angle text, nothing else.${nicheHint}` },
+            { role: 'user', content: `Generate a unique, engaging video angle for the topic: "${topic}". Make it specific and clickworthy without being misleading.${nicheHint}` }
           ],
           temperature: 0.9,
           max_tokens: 100
