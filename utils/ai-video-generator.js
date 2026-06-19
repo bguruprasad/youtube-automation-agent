@@ -802,8 +802,29 @@ class AIVideoGenerator {
   }
 
   async addAudioToVideo(videoPath, audioPath, outputPath) {
-    const command = `ffmpeg -i "${videoPath}" -i "${audioPath}" -c:v copy -c:a aac -shortest "${outputPath}"`;
-    await execAsync(command);
+    // The narration length rarely matches the estimated video length. If we
+    // just use -shortest, a longer narration gets its conclusion/CTA cut off.
+    // So when audio is longer, freeze the last video frame to cover the gap;
+    // otherwise keep the (cheaper) stream-copy + shortest path.
+    const probe = (p) =>
+      execAsync(`ffprobe -v error -show_entries format=duration -of csv=p=0 "${p}"`)
+        .then(r => parseFloat((r.stdout || '0').trim()) || 0)
+        .catch(() => 0);
+
+    const [vDur, aDur] = await Promise.all([probe(videoPath), probe(audioPath)]);
+    const gap = aDur - vDur;
+
+    if (gap > 0.5) {
+      // Extend video to the audio length by holding the last frame (tpad).
+      this.logger.info(`Narration is ${gap.toFixed(1)}s longer than video; freezing last frame to fit.`);
+      const cmd = `ffmpeg -y -i "${videoPath}" -i "${audioPath}" ` +
+        `-vf "tpad=stop_mode=clone:stop_duration=${(gap + 0.3).toFixed(2)}" ` +
+        `-c:v libx264 -preset veryfast -pix_fmt yuv420p -c:a aac -shortest "${outputPath}"`;
+      await execAsync(cmd, { timeout: Math.max(180000, Math.ceil(aDur) * 8000) });
+    } else {
+      const cmd = `ffmpeg -y -i "${videoPath}" -i "${audioPath}" -c:v copy -c:a aac -shortest "${outputPath}"`;
+      await execAsync(cmd, { timeout: 180000 });
+    }
     this.logger.info('Audio added to video successfully');
   }
 
