@@ -168,7 +168,7 @@ class PublishingSchedulingAgent {
           title: (script.title || 'Untitled').slice(0, 100),
           description,
           tags: Array.isArray(tags) ? tags.slice(0, 30) : [],
-          metadata: { category: 24, language: 'en' } // 24 = Entertainment
+          metadata: { category: 17, language: 'en' } // 17 = Sports
         }
       }
     };
