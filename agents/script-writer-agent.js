@@ -244,6 +244,78 @@ Requirements:
     return title;
   }
 
+  /**
+   * Generate a SHORT-form script for a single football moment (YouTube Shorts).
+   * One punchy section, hook-heavy, <=150 words (~50-55s narration). Returns a
+   * script object in the same shape the assembly/SEO/upload code expects.
+   * `moment` = { title, hint, recent? } from the moments provider.
+   */
+  async generateShortScript(moment) {
+    const subject = moment.title;
+    const systemPrompt = `You are a viral YouTube Shorts scriptwriter for a FOOTBALL (soccer) channel. ` +
+      `Write a single, punchy narration for ONE football moment. Output valid JSON only, no markdown.`;
+    const userPrompt = `Write a YouTube Short narration about this football moment: "${subject}".${moment.hint ? ' Context: ' + moment.hint : ''}
+
+Return JSON:
+{
+  "title": "punchy Shorts title (<=70 chars, no clickbait lies)",
+  "hook": "1-sentence hook that grabs attention in the first 2 seconds",
+  "sections": [
+    {"title": "short on-screen caption (<=6 words)", "content": "the full narration", "duration": 50, "visuals": "visual direction"}
+  ],
+  "callToAction": "one short line e.g. 'Follow for more football moments'"
+}
+
+Rules:
+- TOTAL narration (hook + content) MUST be <= 150 words (~50 seconds spoken).
+- Start with the hook - Shorts live or die in the first 2 seconds.
+- Be factual and specific about the moment; this is football/soccer only.
+- Exactly ONE section.
+- Return ONLY the JSON object.`;
+
+    const result = await this.generateWithAI(systemPrompt, userPrompt);
+    let ai = null;
+    if (result) {
+      try { ai = JSON.parse(result.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim()); }
+      catch (e) { this.logger.error('Failed to parse short script:', e); }
+    }
+
+    // Fallback if AI unavailable/unparseable.
+    if (!ai) {
+      ai = {
+        title: subject,
+        hook: `${subject} - one of football's greatest moments.`,
+        sections: [{ title: subject.slice(0, 40), content:
+          `${subject}. ${moment.hint || ''} A moment football fans will never forget.`,
+          duration: 45, visuals: subject }],
+        callToAction: 'Follow for more football moments'
+      };
+    }
+
+    const section = (ai.sections && ai.sections[0]) || {};
+    return {
+      title: (ai.title || subject).slice(0, 100),
+      hook: { type: 'ai-generated', text: ai.hook || '', duration: '0:00-0:02' },
+      introduction: { greeting: '', topicIntro: '', valueProposition: '', credibility: '', duration: '' },
+      mainContent: {
+        sections: [{
+          type: 'ai-generated',
+          title: section.title || subject.slice(0, 40),
+          content: section.content || ai.hook || subject,
+          visuals: section.visuals ? [section.visuals] : [subject],
+          duration: Math.min(section.duration || 50, 58)
+        }],
+        totalDuration: Math.min(section.duration || 50, 58)
+      },
+      conclusion: { type: 'conclusion', title: '', recap: [], duration: '' },
+      callToAction: { type: 'call_to_action', subscribe: ai.callToAction || 'Follow for more football moments', like: '', comment: '' },
+      duration: Math.min(section.duration || 50, 58),
+      keywords: [],
+      format: 'short',
+      metadata: { isShort: true, moment: subject, recent: !!moment.recent, createdAt: new Date().toISOString() }
+    };
+  }
+
   async generateTitle(strategy) {
     const templates = [
       `${strategy.angle}`,

@@ -21,7 +21,7 @@ Shorts, and Shorts repurposed from existing long videos. Output → `output/shor
       Recent-moments source via football-data.org is OPTIONAL and gated on
       FOOTBALL_DATA_API_KEY — graceful curated-only fallback when unset.
       (Actual football-data.org signup = user's separate todo, see below.)
-- [ ] 5. **Short script prompt.** New template: 1 section, ≤150 words (~50-55s),
+- [x] 5. **Short script prompt.** New template: 1 section, ≤150 words (~50-55s),
       hook-heavy. Reuse listicle-title reconciliation where relevant.
 - [ ] 6. **Mode B — Make Short from existing** (`POST /short-from/:folder`). Reuse a long
       video's images/narration/SEO, fit to vertical, ≤60s. Cheapest to iterate first.
