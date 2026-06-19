@@ -82,6 +82,10 @@ class YouTubeAutomationAgent {
       await agent.initialize();
       this.logger.info(`✓ ${name} agent initialized`);
     }
+
+    // Shorts producer (reuses the production agent's AIVideoGenerator).
+    const { ShortsProducer } = require('./utils/shorts-producer');
+    this.shortsProducer = new ShortsProducer(this.agents.production.aiVideoGenerator, this.logger);
   }
 
   setupAPI() {
@@ -235,6 +239,77 @@ class YouTubeAutomationAgent {
         res.json({ success: true, ...result });
       } catch (error) {
         this.logger.error('Dashboard upload failed:', error);
+        res.status(500).json({ success: false, error: error.message });
+      }
+    });
+
+    // Mode A - Fresh single-moment Short. Optional body: { moment } to force a
+    // specific subject; otherwise the moments provider picks one (curated, or
+    // recent via football-data.org when configured).
+    this.app.post('/generate-short', async (req, res) => {
+      try {
+        const shortsConfig = require('./utils/shorts-config');
+        const momentsProvider = require('./utils/football-moments-provider');
+        const forced = req.body && req.body.moment;
+        const moment = forced
+          ? { title: forced, hint: '', recent: false }
+          : await momentsProvider.getMoment({ logger: this.logger });
+
+        this.logger.info(`Generating Short for moment: ${moment.title}`);
+        const script = await this.agents.scriptWriter.generateShortScript(moment);
+
+        // Fresh portrait, low-quality images.
+        const images = [];
+        const visualPrompt = `${moment.title}. ${moment.hint || ''} Football/soccer, dramatic, cinematic.`;
+        for (let i = 0; i < shortsConfig.imageCount; i++) {
+          const assets = await this.agents.production.aiVideoGenerator.generateVisualAssets(
+            visualPrompt, 'cinematic', 1,
+            { size: shortsConfig.imageSize, quality: shortsConfig.imageQuality }
+          );
+          images.push(...assets);
+        }
+
+        const result = await this.shortsProducer.produce(script, images);
+        res.json({ success: true, folder: result.folder, title: script.title, moment: moment.title });
+      } catch (error) {
+        this.logger.error('Short generation failed:', error);
+        res.status(500).json({ success: false, error: error.message });
+      }
+    });
+
+    // Mode B - Make a Short from an existing long-video output folder.
+    this.app.post('/short-from/:folder', async (req, res) => {
+      try {
+        const folder = path.basename(req.params.folder);
+        const srcPath = path.join(__dirname, 'output', folder);
+        const fsp = require('fs').promises;
+        const script = JSON.parse(await fsp.readFile(path.join(srcPath, 'script.json'), 'utf8'));
+
+        // Build a short script from the source: prefer its strongest section.
+        const sections = (script.mainContent && script.mainContent.sections) || [];
+        const chosen = sections[0] || { title: script.title, content: script.hook?.text || script.title };
+        const shortScript = await this.agents.scriptWriter.generateShortScript({
+          title: chosen.title || script.title,
+          hint: (typeof chosen.content === 'string' ? chosen.content : '').slice(0, 300),
+          recent: false,
+        });
+
+        // Reuse the source folder's images.
+        const assetsDir = path.join(srcPath, 'assets');
+        let images = [];
+        try {
+          const files = (await fsp.readdir(assetsDir)).filter(f => f.endsWith('.png')).sort();
+          images = files.slice(0, 2).map(f => path.join(assetsDir, f));
+        } catch {}
+        if (!images.length) throw new Error('No source images found to repurpose.');
+
+        const srcThumb = path.join(srcPath, 'thumbnail.png');
+        const result = await this.shortsProducer.produce(shortScript, images, {
+          sourceThumb: require('fs').existsSync(srcThumb) ? srcThumb : null,
+        });
+        res.json({ success: true, folder: result.folder, title: shortScript.title, source: folder });
+      } catch (error) {
+        this.logger.error('Short-from-existing failed:', error);
         res.status(500).json({ success: false, error: error.message });
       }
     });

@@ -23,9 +23,9 @@ Shorts, and Shorts repurposed from existing long videos. Output → `output/shor
       (Actual football-data.org signup = user's separate todo, see below.)
 - [x] 5. **Short script prompt.** New template: 1 section, ≤150 words (~50-55s),
       hook-heavy. Reuse listicle-title reconciliation where relevant.
-- [ ] 6. **Mode B — Make Short from existing** (`POST /short-from/:folder`). Reuse a long
+- [x] 6. **Mode B — Make Short from existing** (`POST /short-from/:folder`). Reuse a long
       video's images/narration/SEO, fit to vertical, ≤60s. Cheapest to iterate first.
-- [ ] 7. **Mode A — Fresh Short** (`POST /generate-short`). Moments provider → short
+- [x] 7. **Mode A — Fresh Short** (`POST /generate-short`). Moments provider → short
       script → 1-2 portrait low-q images → TTS → vertical assembly → SEO + #Shorts.
 - [ ] 8. **Dashboard.** "Generate Short" control + "✂️ Make Short" button per existing
       output. Shorts listed from output/shorts/ with their own youtube_upload.json so
