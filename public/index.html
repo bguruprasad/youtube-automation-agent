@@ -345,6 +345,17 @@
       .suggestions-grid { grid-template-columns: 1fr; }
       .output-item { flex-direction: column; align-items: flex-start; }
     }
+    .tabs {
+      display: flex; gap: 4px; margin-bottom: 20px;
+      border-bottom: 1px solid var(--border);
+    }
+    .tab {
+      background: transparent; border: none; color: var(--text-dim, #8b949e);
+      padding: 12px 20px; font-size: 0.95rem; font-weight: 600; cursor: pointer;
+      border-bottom: 2px solid transparent; margin-bottom: -1px;
+    }
+    .tab:hover { color: var(--text); }
+    .tab.active { color: var(--accent, #58a6ff); border-bottom-color: var(--accent, #58a6ff); }
   </style>
 </head>
 <body>
@@ -357,6 +368,14 @@
       </div>
     </header>
 
+    <!-- Tabs -->
+    <div class="tabs">
+      <button class="tab active" data-tab="long" onclick="switchTab('long')">🎬 Long Videos</button>
+      <button class="tab" data-tab="shorts" onclick="switchTab('shorts')">📱 Shorts</button>
+    </div>
+
+    <!-- ===== LONG VIDEOS TAB ===== -->
+    <div class="tab-panel" id="tab-long">
     <!-- Topic Suggestions -->
     <div class="section">
       <div class="section-title">💡 Topic Suggestions</div>
@@ -387,7 +406,10 @@
         <div class="empty-state">Loading outputs...</div>
       </div>
     </div>
+    </div><!-- /tab-long -->
 
+    <!-- ===== SHORTS TAB ===== -->
+    <div class="tab-panel" id="tab-shorts" style="display:none;">
     <!-- YouTube Shorts (vertical) -->
     <div class="section">
       <div class="section-title" style="justify-content:space-between;">
@@ -404,6 +426,7 @@
         <div class="empty-state">Loading shorts...</div>
       </div>
     </div>
+    </div><!-- /tab-shorts -->
   </div>
 
   <script>
@@ -814,9 +837,16 @@
     }
 
     // --- Init ---
+    function switchTab(name) {
+      document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
+      document.getElementById('tab-long').style.display = name === 'long' ? '' : 'none';
+      document.getElementById('tab-shorts').style.display = name === 'shorts' ? '' : 'none';
+      if (name === 'shorts') loadShorts();
+    }
+
     checkHealth();
-    loadOutputs();
-    loadShorts();
+    loadOutputs();      // default tab is Long Videos
+    // Shorts load lazily when the Shorts tab is first opened (see switchTab).
     setInterval(checkHealth, 30000);
   </script>
 </body>
