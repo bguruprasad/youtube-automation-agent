@@ -63,8 +63,9 @@ class ScriptWriterAgent {
       // Try AI-powered generation first
       const aiScript = await this.generateScriptWithAI(strategy);
       if (aiScript) {
+        const sectionCount = (aiScript.sections || []).length;
         const script = {
-          title: aiScript.title,
+          title: this._reconcileTitleCount(aiScript.title, sectionCount),
           hook: { type: 'ai-generated', text: aiScript.hook, duration: '0:00-0:05' },
           introduction: {
             greeting: '',
@@ -207,6 +208,10 @@ Requirements:
 - Each section should have at least 2-3 paragraphs of narration text
 - Avoid generic filler phrases
 - The hook should immediately grab attention
+- IMPORTANT: if the title contains a number (e.g. "Top 5", "7 Moments"),
+  that number MUST equal the number of sections. Since you write 3-5
+  sections, never promise more than 5 in the title. Prefer matching exactly
+  (5 sections -> "Top 5..."). Do not write "Top 10" with only 5 sections.
 - Return ONLY the JSON object, no other text`;
 
     const result = await this.generateWithAI(systemPrompt, userPrompt);
@@ -219,6 +224,24 @@ Requirements:
       this.logger.error('Failed to parse AI script response:', error);
       return null;
     }
+  }
+
+  // Safety net: if a listicle title promises a number of items that doesn't
+  // match the actual section count (e.g. "Top 10" with only 5 sections),
+  // rewrite the number to match. Prevents over-promising titles on YouTube.
+  _reconcileTitleCount(title, sectionCount) {
+    if (!title || !sectionCount) return title;
+    // Match a leading/standalone count like "Top 10", "10 ", "7 Best".
+    const m = title.match(/\b(\d{1,2})\b/);
+    if (!m) return title;
+    const promised = parseInt(m[1], 10);
+    // Only correct plausible listicle counts (2-20) that overshoot the content.
+    if (promised >= 2 && promised <= 20 && promised !== sectionCount) {
+      const fixed = title.replace(m[0], String(sectionCount));
+      this.logger.info(`Title promised ${promised} but script has ${sectionCount} sections; corrected to "${fixed}"`);
+      return fixed;
+    }
+    return title;
   }
 
   async generateTitle(strategy) {
