@@ -300,6 +300,13 @@
     .btn-short:disabled { opacity: 0.7; cursor: default; }
     .short-status, .short-up-status { font-size: 0.78rem; word-break: break-all; }
     .short-privacy { font-size: 0.78rem; padding: 4px 6px; border-radius: 4px; background: var(--surface); color: var(--text); border: 1px solid var(--border); }
+    .btn-inline-up {
+      font-size: 0.7rem; padding: 2px 8px; margin-left: 6px; border-radius: 4px;
+      background: #c4302b; color: #fff; border: 1px solid #c4302b; cursor: pointer;
+      vertical-align: middle;
+    }
+    .btn-inline-up:hover:not(:disabled) { background: #a32622; }
+    .btn-inline-up:disabled { opacity: 0.7; cursor: default; }
     .privacy-select {
       font-size: 0.78rem; padding: 4px 6px; border-radius: 4px;
       background: var(--surface); color: var(--text);
@@ -641,8 +648,12 @@
         container.innerHTML = '<div class="outputs-list">' + data.shorts.map(s => {
           const f = escHtml(s.folder);
           const up = s.uploaded;
+          // Inline: video link + a small one-click upload button right beside it
+          // (only when the short has a video and isn't uploaded yet).
+          const inlineUpload = (s.hasVideo && !up)
+            ? `<button class="btn-inline-up" data-folder="${f}" title="Upload this Short to YouTube" onclick="uploadShort(this)">⬆ Upload</button>` : '';
           const videoLink = s.hasVideo
-            ? `<a href="/short-file/${encodeURIComponent(s.folder)}/video.mp4" target="_blank" class="file-badge exists">▶ video</a>` : '';
+            ? `<a href="/short-file/${encodeURIComponent(s.folder)}/video.mp4" target="_blank" class="file-badge exists">▶ video</a>${inlineUpload}` : '';
           let act;
           if (up) {
             act = `<span class="uploaded-badge">✅ Uploaded (${escHtml(up.privacy||'')})</span>
