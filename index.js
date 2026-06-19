@@ -152,6 +152,11 @@ class YouTubeAutomationAgent {
             // Use the folder's modification time for true generation-order
             // sorting (folder names only carry a date, not a time).
             const stat = await fs.stat(dirPath);
+            // Has this folder already been uploaded to YouTube?
+            let uploaded = null;
+            if (files.includes('youtube_upload.json')) {
+              try { uploaded = JSON.parse(await fs.readFile(path.join(dirPath, 'youtube_upload.json'), 'utf8')); } catch {}
+            }
             outputs.push({
               folder: dir,
               title: script.title,
@@ -160,6 +165,7 @@ class YouTubeAutomationAgent {
               hasThumbnail: files.includes('thumbnail.png'),
               createdAt: script.createdAt || null,
               modifiedAt: stat.mtimeMs,
+              uploaded, // { videoId, url, privacy, uploadedAt } or null
             });
           } catch { /* skip invalid dirs */ }
         }
@@ -209,6 +215,22 @@ class YouTubeAutomationAgent {
         const folder = path.basename(req.params.folder); // prevent path traversal
         const folderPath = path.join(__dirname, 'output', folder);
         const privacy = (req.body && req.body.privacy) || undefined;
+        const force = !!(req.body && req.body.force);
+
+        // Duplicate guard: refuse if already uploaded, unless force=true.
+        const markerPath = path.join(folderPath, 'youtube_upload.json');
+        const fsp = require('fs').promises;
+        let existing = null;
+        try { existing = JSON.parse(await fsp.readFile(markerPath, 'utf8')); } catch {}
+        if (existing && !force) {
+          return res.status(409).json({
+            success: false,
+            alreadyUploaded: true,
+            error: `Already uploaded to YouTube (${existing.url}). Re-upload would create a duplicate.`,
+            uploaded: existing,
+          });
+        }
+
         const result = await this.agents.publishing.uploadOutputFolder(folderPath, { privacyStatus: privacy });
         res.json({ success: true, ...result });
       } catch (error) {

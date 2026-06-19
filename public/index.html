@@ -293,6 +293,12 @@
     .btn-upload:hover:not(:disabled) { background: #a32622; border-color: #a32622; }
     .btn-upload:disabled { opacity: 0.7; cursor: default; }
     .upload-status { font-size: 0.78rem; word-break: break-all; }
+    .privacy-select {
+      font-size: 0.78rem; padding: 4px 6px; border-radius: 4px;
+      background: var(--surface); color: var(--text);
+      border: 1px solid var(--border);
+    }
+    .uploaded-badge { font-size: 0.78rem; color: var(--green, #3fb950); font-weight: 600; }
 
     .file-badge {
       font-size: 0.72rem;
@@ -549,9 +555,30 @@
           if (o.hasThumbnail) indicators.push('🖼');
 
           const folderAttr = escHtml(o.folder);
-          const uploadBtn = o.hasVideo
-            ? `<button class="btn btn-sm btn-upload" data-folder="${folderAttr}" onclick="uploadToYouTube(this)">⬆ Upload to YouTube</button>`
-            : `<button class="btn btn-sm btn-outline" disabled title="No video.mp4 yet">No video</button>`;
+          const up = o.uploaded;
+          const privacySelect = `<select class="privacy-select" data-folder="${folderAttr}">
+              <option value="public">Public</option>
+              <option value="unlisted" selected>Unlisted</option>
+              <option value="private">Private</option>
+            </select>`;
+
+          let actions;
+          if (!o.hasVideo) {
+            actions = `<button class="btn btn-sm btn-outline" disabled title="No video.mp4 yet">No video</button>`;
+          } else if (up) {
+            // Already uploaded: show link + a clearly-marked re-upload action.
+            actions = `
+              <span class="uploaded-badge">✅ Uploaded (${escHtml(up.privacy || '')})</span>
+              <a href="${escHtml(up.url)}" target="_blank" class="btn btn-sm btn-outline">View on YouTube</a>
+              ${privacySelect}
+              <button class="btn btn-sm btn-outline" data-folder="${folderAttr}" onclick="uploadToYouTube(this, true)">Re-upload (new copy)</button>
+              <span class="upload-status" data-folder="${folderAttr}"></span>`;
+          } else {
+            actions = `
+              ${privacySelect}
+              <button class="btn btn-sm btn-upload" data-folder="${folderAttr}" onclick="uploadToYouTube(this, false)">⬆ Upload to YouTube</button>
+              <span class="upload-status" data-folder="${folderAttr}"></span>`;
+          }
 
           return `
             <div class="output-item">
@@ -560,10 +587,7 @@
                 <div class="folder-name">${escHtml(o.folder)}</div>
               </div>
               <div class="output-files">${fileLinks}</div>
-              <div class="output-actions">
-                ${uploadBtn}
-                <span class="upload-status" data-folder="${folderAttr}"></span>
-              </div>
+              <div class="output-actions">${actions}</div>
             </div>
           `;
         }).join('') + '</div>';
@@ -572,10 +596,17 @@
       }
     }
 
-    async function uploadToYouTube(btn) {
+    async function uploadToYouTube(btn, force) {
       const folder = btn.getAttribute('data-folder');
       const statusEl = document.querySelector(`.upload-status[data-folder="${CSS.escape(folder)}"]`);
-      if (!confirm('Upload this video to YouTube as UNLISTED?')) return;
+      const sel = document.querySelector(`.privacy-select[data-folder="${CSS.escape(folder)}"]`);
+      const privacy = sel ? sel.value : 'unlisted';
+
+      const confirmMsg = force
+        ? 'This video was already uploaded. Upload ANOTHER copy as ' + privacy.toUpperCase() + '?'
+        : 'Upload this video to YouTube as ' + privacy.toUpperCase() + '?';
+      if (!confirm(confirmMsg)) return;
+
       btn.disabled = true;
       const original = btn.textContent;
       btn.textContent = '⏳ Uploading...';
@@ -584,7 +615,7 @@
         const res = await fetch('/upload/' + encodeURIComponent(folder), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ privacy: 'unlisted' })
+          body: JSON.stringify({ privacy, force: !!force })
         });
         const data = await res.json();
         if (data.success) {
@@ -592,6 +623,14 @@
           if (statusEl) {
             statusEl.style.color = 'var(--green, #3fb950)';
             statusEl.innerHTML = ` <a href="${escHtml(data.url)}" target="_blank">${escHtml(data.url)}</a>`;
+          }
+          setTimeout(loadOutputs, 1500); // refresh to show uploaded state
+        } else if (data.alreadyUploaded) {
+          btn.disabled = false;
+          btn.textContent = original;
+          if (statusEl) {
+            statusEl.style.color = 'var(--red, #f85149)';
+            statusEl.innerHTML = ' ⚠️ ' + escHtml(data.error);
           }
         } else {
           throw new Error(data.error || 'Upload failed');

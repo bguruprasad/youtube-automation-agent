@@ -179,7 +179,24 @@ class PublishingSchedulingAgent {
     }
 
     const result = await this.uploadToYouTube(scheduleEntry);
-    return { videoId: result.id, url: `https://www.youtube.com/watch?v=${result.id}` };
+    const url = `https://www.youtube.com/watch?v=${result.id}`;
+
+    // Record the upload in the folder so the dashboard can show "already
+    // uploaded" and guard against accidental duplicate uploads.
+    try {
+      await fsPromises.writeFile(
+        path.join(folderPath, 'youtube_upload.json'),
+        JSON.stringify({
+          videoId: result.id, url,
+          privacy: privacyStatus || process.env.DEFAULT_PRIVACY_STATUS || 'public',
+          uploadedAt: new Date().toISOString()
+        }, null, 2)
+      );
+    } catch (e) {
+      this.logger.warn(`Could not write youtube_upload.json: ${e.message}`);
+    }
+
+    return { videoId: result.id, url };
   }
 
   async uploadToYouTube(scheduleEntry) {
