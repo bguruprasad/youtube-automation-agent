@@ -528,8 +528,9 @@
           return;
         }
 
-        // Sort newest first (folder names are date-prefixed)
-        data.outputs.sort((a, b) => b.folder.localeCompare(a.folder));
+        // Server already returns newest-first (by folder modification time).
+        // Keep a defensive fallback in case modifiedAt is missing.
+        data.outputs.sort((a, b) => (b.modifiedAt || 0) - (a.modifiedAt || 0));
 
         container.innerHTML = '<div class="outputs-list">' + data.outputs.map(o => {
           const fileLinks = o.files.map(f => {

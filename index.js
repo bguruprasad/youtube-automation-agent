@@ -145,18 +145,26 @@ class YouTubeAutomationAgent {
         const outputs = [];
         for (const dir of dirs) {
           try {
-            const scriptPath = path.join(outputDir, dir, 'script.json');
+            const dirPath = path.join(outputDir, dir);
+            const scriptPath = path.join(dirPath, 'script.json');
             const script = JSON.parse(await fs.readFile(scriptPath, 'utf8'));
-            const files = await fs.readdir(path.join(outputDir, dir));
+            const files = await fs.readdir(dirPath);
+            // Use the folder's modification time for true generation-order
+            // sorting (folder names only carry a date, not a time).
+            const stat = await fs.stat(dirPath);
             outputs.push({
               folder: dir,
               title: script.title,
               files: files.filter(f => !f.startsWith('.')),
               hasVideo: files.includes('video.mp4'),
               hasThumbnail: files.includes('thumbnail.png'),
+              createdAt: script.createdAt || null,
+              modifiedAt: stat.mtimeMs,
             });
           } catch { /* skip invalid dirs */ }
         }
+        // Newest first by actual mtime.
+        outputs.sort((a, b) => b.modifiedAt - a.modifiedAt);
         res.json({ success: true, outputs });
       } catch (error) {
         res.status(500).json({ success: false, error: error.message });
