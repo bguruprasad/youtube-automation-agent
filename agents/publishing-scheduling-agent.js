@@ -125,6 +125,35 @@ class PublishingSchedulingAgent {
   }
 
   /**
+   * Sanitize tags for the YouTube API, which rejects "invalid video keywords":
+   * - strip characters YouTube disallows in tags (< > and the colon/quotes that
+   *   trigger rejection), collapse whitespace
+   * - drop empties, cap each tag at 60 chars, dedupe
+   * - keep total under YouTube's 500-char budget, cap at 25 tags
+   */
+  _sanitizeTags(tags) {
+    if (!Array.isArray(tags)) return [];
+    const out = [];
+    const seen = new Set();
+    let total = 0;
+    for (let raw of tags) {
+      if (typeof raw !== 'string') continue;
+      let t = raw.replace(/[<>"]/g, '').replace(/:/g, ' ').replace(/\s+/g, ' ').trim();
+      if (!t) continue;
+      t = t.slice(0, 60);
+      const key = t.toLowerCase();
+      if (seen.has(key)) continue;
+      // +1 accounts for the comma YouTube counts between tags.
+      if (total + t.length + 1 > 480) break;
+      seen.add(key);
+      out.push(t);
+      total += t.length + 1;
+      if (out.length >= 25) break;
+    }
+    return out;
+  }
+
+  /**
    * Upload a generated output folder (output/<folder>/) directly to YouTube.
    * Builds SEO title/description/tags from the folder's script.json and reuses
    * the verified uploadToYouTube() path. Returns { videoId, url }.
@@ -177,7 +206,7 @@ class PublishingSchedulingAgent {
         seo: {
           title: (script.title || 'Untitled').slice(0, 100),
           description,
-          tags: Array.isArray(tags) ? tags.slice(0, 30) : [],
+          tags: this._sanitizeTags(tags),
           metadata: { category, language }
         }
       }
