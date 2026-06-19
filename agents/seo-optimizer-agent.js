@@ -365,7 +365,8 @@ class SEOOptimizerAgent {
     const hashtags = [];
     
     // Primary hashtag
-    const primaryHashtag = `#${strategy.topic.replace(/\s+/g, '')}`;
+    // Strip non-alphanumerics: YouTube rejects hashtags with apostrophes/punctuation.
+    const primaryHashtag = `#${strategy.topic.replace(/[^a-zA-Z0-9]/g, '')}`;
     hashtags.push(primaryHashtag);
     
     // Content type hashtag

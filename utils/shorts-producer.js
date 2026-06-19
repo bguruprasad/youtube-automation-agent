@@ -79,10 +79,10 @@ class ShortsProducer {
     } catch (e) {
       this.logger.warn(`Short SEO fell back to minimal: ${e.message}`);
     }
-    // Shorts need #Shorts to be classified; add football hashtags.
-    if (!/#shorts/i.test(description)) {
-      description += `\n\n#Shorts #Football #Soccer`;
-    }
+    // Shorts need #Shorts to be classified. Put it at the TOP: YouTube can
+    // truncate content after a later hashtag block, so a trailing #Shorts may
+    // be dropped. A leading hashtag line is reliable and still valid.
+    description = `#Shorts #Football #Soccer\n\n` + description.replace(/\n*#Shorts[^\n]*/gi, '').trim();
     return {
       title: (script.title || 'Football Short').slice(0, 100),
       description,

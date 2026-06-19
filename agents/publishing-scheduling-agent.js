@@ -138,21 +138,31 @@ class PublishingSchedulingAgent {
       throw new Error('No video.mp4 in output folder; generate the video first.');
     }
 
-    // Build SEO metadata from the script (same generator the pipeline uses).
-    const strategy = (script.metadata && script.metadata.strategy) || {
-      topic: script.title, angle: '', keywords: script.keywords || [],
-      targetAudience: '', contentType: 'List'
-    };
-    let description = '';
-    let tags = script.keywords || [];
-    try {
-      const { SEOOptimizerAgent } = require('./seo-optimizer-agent');
-      const seo = Object.create(SEOOptimizerAgent.prototype);
-      description = await seo.generateDescription(script, strategy);
-      tags = await seo.generateTags(script, strategy);
-    } catch (e) {
-      this.logger.warn(`SEO generation fell back to minimal metadata: ${e.message}`);
-      description = (script.hook && script.hook.text) || script.title;
+    // Prefer SEO already built and stored in script.seo (Shorts embed their
+    // own, including #Shorts). Only regenerate when no pre-built SEO exists,
+    // so we never discard Shorts-specific tags/hashtags.
+    let description, tags, category, language;
+    if (script.seo && script.seo.description) {
+      description = script.seo.description;
+      tags = script.seo.tags || script.keywords || [];
+      category = (script.seo.metadata && script.seo.metadata.category) || 17;
+      language = (script.seo.metadata && script.seo.metadata.language) || 'en';
+    } else {
+      const strategy = (script.metadata && script.metadata.strategy) || {
+        topic: script.title, angle: '', keywords: script.keywords || [],
+        targetAudience: '', contentType: 'List'
+      };
+      tags = script.keywords || [];
+      category = 17; language = 'en';
+      try {
+        const { SEOOptimizerAgent } = require('./seo-optimizer-agent');
+        const seo = Object.create(SEOOptimizerAgent.prototype);
+        description = await seo.generateDescription(script, strategy);
+        tags = await seo.generateTags(script, strategy);
+      } catch (e) {
+        this.logger.warn(`SEO generation fell back to minimal metadata: ${e.message}`);
+        description = (script.hook && script.hook.text) || script.title;
+      }
     }
 
     const thumbPath = path.join(folderPath, 'thumbnail.png');
@@ -168,7 +178,7 @@ class PublishingSchedulingAgent {
           title: (script.title || 'Untitled').slice(0, 100),
           description,
           tags: Array.isArray(tags) ? tags.slice(0, 30) : [],
-          metadata: { category: 17, language: 'en' } // 17 = Sports
+          metadata: { category, language }
         }
       }
     };

@@ -30,11 +30,11 @@ Shorts, and Shorts repurposed from existing long videos. Output → `output/shor
 - [x] 8. **Dashboard.** "Generate Short" control + "✂️ Make Short" button per existing
       output. Shorts listed from output/shorts/ with their own youtube_upload.json so
       the duplicate-guard + privacy dropdown work.
-- [ ] 9. **Upload integration.** Reuse uploadOutputFolder (vertical ≤60s + #Shorts =
+- [x] 9. **Upload integration.** Reuse uploadOutputFolder (vertical ≤60s + #Shorts =
       auto-classified by YouTube). Sports category. Verified-channel thumbnails work.
 - [x] 9b. **Inline "⬆ Upload" button next to each generated short's video link**
       for quick one-click upload (alongside the actions-row Upload Short button).
-- [ ] 10. **End-to-end test.** One Short each mode → upload unlisted to Halftime Replay
+- [x] 10. **End-to-end test.** One Short each mode → upload unlisted to Halftime Replay
       → verify vertical, in-frame text, audio sync, SEO. Then report for review.
 
 ## Deferred (noted, NOT building now)
