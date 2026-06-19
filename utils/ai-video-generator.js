@@ -339,25 +339,35 @@ class AIVideoGenerator {
         // zoompan via ffmpeg overlay, so the title is never cropped by the zoom.
         const textOverlay = await this._makeTextOverlay(sectionTitle, tempDir, i);
 
+        // zoompan encoding is CPU-heavy; use a fast preset + all cores, and a
+        // timeout that scales with clip length (so long sections don't get
+        // killed mid-encode and fall back to a static clip).
+        const enc = `-c:v libx264 -preset veryfast -threads 0 -pix_fmt yuv420p -r 30`;
+        const clipTimeout = Math.max(120000, Math.ceil(clipDuration) * 8000);
+
         let cmd;
         if (textOverlay) {
           // [0]=looped image -> kenburns -> [bg]; overlay [1]=text PNG on top.
           cmd = `ffmpeg -y -loop 1 -i "${validAssets[i]}" -i "${textOverlay}" -t ${clipDuration} ` +
             `-filter_complex "[0:v]${filter}[bg];[bg][1:v]overlay=0:0:format=auto" ` +
-            `-c:v libx264 -pix_fmt yuv420p -r 30 "${clipPath}"`;
+            `${enc} "${clipPath}"`;
         } else {
           cmd = `ffmpeg -y -loop 1 -i "${validAssets[i]}" -t ${clipDuration} ` +
-            `-vf "${filter}" -c:v libx264 -pix_fmt yuv420p -r 30 "${clipPath}"`;
+            `-vf "${filter}" ${enc} "${clipPath}"`;
         }
         try {
-          execSync(cmd, { stdio: 'pipe', timeout: 60000 });
+          execSync(cmd, { stdio: 'pipe', timeout: clipTimeout });
           clipPaths.push(clipPath);
         } catch (e) {
-          this.logger.warn(`Clip ${i} generation failed, using simple scale`);
-          const fallback = `ffmpeg -y -loop 1 -i "${validAssets[i]}" -t ${clipDuration} ` +
-            `-vf "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=30" ` +
-            `-c:v libx264 -pix_fmt yuv420p "${clipPath}"`;
-          execSync(fallback, { stdio: 'pipe', timeout: 60000 });
+          this.logger.warn(`Clip ${i} generation failed (${e.message}), using simple scale`);
+          // Fallback: static scaled image + the text overlay (no Ken Burns).
+          const overlayInput = textOverlay ? ` -i "${textOverlay}"` : '';
+          const overlayFilter = textOverlay
+            ? `-filter_complex "[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=30[bg];[bg][1:v]overlay=0:0:format=auto"`
+            : `-vf "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=30"`;
+          const fallback = `ffmpeg -y -loop 1 -i "${validAssets[i]}"${overlayInput} -t ${clipDuration} ` +
+            `${overlayFilter} ${enc} "${clipPath}"`;
+          execSync(fallback, { stdio: 'pipe', timeout: clipTimeout });
           clipPaths.push(clipPath);
         }
       }
@@ -369,8 +379,16 @@ class AIVideoGenerator {
         const listFile = path.join(tempDir, 'clips.txt');
         const listContent = clipPaths.map(p => `file '${p}'`).join('\n');
         await fs.writeFile(listFile, listContent);
-        const cmd = `ffmpeg -y -f concat -safe 0 -i "${listFile}" -c:v libx264 -pix_fmt yuv420p "${videoPath}"`;
-        execSync(cmd, { stdio: 'pipe', timeout: 120000 });
+        // Clips already share codec/params, so stream-copy concat is near-instant
+        // (no re-encode). Falls back to re-encode if copy fails.
+        try {
+          execSync(`ffmpeg -y -f concat -safe 0 -i "${listFile}" -c copy "${videoPath}"`,
+            { stdio: 'pipe', timeout: 120000 });
+        } catch (e) {
+          this.logger.warn(`Concat copy failed (${e.message}), re-encoding`);
+          execSync(`ffmpeg -y -f concat -safe 0 -i "${listFile}" -c:v libx264 -preset veryfast -pix_fmt yuv420p "${videoPath}"`,
+            { stdio: 'pipe', timeout: 300000 });
+        }
       }
     }
 
