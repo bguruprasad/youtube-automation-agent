@@ -86,6 +86,7 @@ data/audio/
 data/captions/
 data/scripts/
 data/videos/
+data/strategy-review.json
 output/
 
 # Session notes

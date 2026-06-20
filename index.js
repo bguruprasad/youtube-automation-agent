@@ -204,6 +204,24 @@ class YouTubeAutomationAgent {
       }
     });
 
+    // Strategy review: last persisted report (fast) or generate a fresh one.
+    this.app.get('/strategy-review', async (req, res) => {
+      try {
+        const review = this.agents.analytics.getLastStrategyReview();
+        res.json({ success: true, review });
+      } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+      }
+    });
+    this.app.post('/strategy-review/generate', async (req, res) => {
+      try {
+        const review = await this.agents.analytics.generateStrategyReview();
+        res.json({ success: true, review });
+      } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+      }
+    });
+
     // Get upcoming schedule
     this.app.get('/schedule', async (req, res) => {
       try {

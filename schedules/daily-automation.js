@@ -232,36 +232,31 @@ class DailyAutomation {
   async weeklyStrategyReview() {
     try {
       this.logger.info('Starting weekly strategy review...');
-      
-      // Analyze performance of last week's content
-      const weeklyAnalytics = await this.agents.analytics.getRecentAnalytics(7);
-      
-      // Update content strategy based on performance
-      if (weeklyAnalytics.topPerformers.length > 0) {
-        const bestPerformingTopics = weeklyAnalytics.topPerformers
-          .map(video => video.videoDetails.title)
-          .slice(0, 3);
-        
-        this.logger.info(`Top performing topics: ${bestPerformingTopics.join(', ')}`);
+
+      // Real review: derive patterns from actual upload performance (views +
+      // cost-per-view) and get LLM recommendations. Persisted for the dashboard.
+      const review = await this.agents.analytics.generateStrategyReview();
+
+      if (review.hasData) {
+        this.logger.info(`Strategy review: ${review.takeaways.join(' ')}`);
+      } else {
+        this.logger.info(`Strategy review: ${review.message}`);
       }
 
-      // Optimize publishing times
-      await this.agents.publishing.optimizePublishTimes();
-      
-      // Generate strategy insights
-      const insights = await this.generateWeeklyInsights(weeklyAnalytics);
-      
-      this.logger.success('Weekly strategy review completed');
-      
-      await this.logAutomationEvent('weekly_strategy_review', 'success', {
-        insights
-      });
+      // Try to optimize publishing times for any queued content (best-effort).
+      try { await this.agents.publishing.optimizePublishTimes(); } catch (e) {
+        this.logger.warn(`optimizePublishTimes skipped: ${e.message}`);
+      }
 
+      this.logger.success('Weekly strategy review completed');
+      await this.logAutomationEvent('weekly_strategy_review', 'success', {
+        takeaways: review.takeaways || [],
+        recommendations: review.recommendations || [],
+      });
     } catch (error) {
       this.logger.error('Weekly strategy review failed:', error);
-      
       await this.logAutomationEvent('weekly_strategy_review', 'error', {
-        error: error.message
+        error: error.message,
       });
     }
   }

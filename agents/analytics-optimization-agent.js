@@ -29,6 +29,15 @@ class AnalyticsOptimizationAgent {
       this.youtubeAnalytics = null;
       this.youtube = null;
     }
+
+    // OpenAI for LLM-written strategy recommendations (optional).
+    try {
+      const apiKey = this.credentials.openai?.apiKey || process.env.OPENAI_API_KEY;
+      if (apiKey) {
+        const OpenAI = require('openai');
+        this.openai = new OpenAI({ apiKey });
+      }
+    } catch { this.openai = null; }
   }
 
   async loadHistoricalData() {
@@ -738,6 +747,92 @@ class AnalyticsOptimizationAgent {
     };
 
     return { totalVideos: enriched.length, videos: enriched, totals, apiAvailable: !!this.youtube };
+  }
+
+  // Real strategy review: derive patterns from actual upload performance, then
+  // ask the LLM for concrete, channel-specific recommendations. Persists the
+  // latest report to data/strategy-review.json so the dashboard can show it
+  // without regenerating. This replaces the old no-op weeklyStrategyReview.
+  async generateStrategyReview() {
+    const report = await this.getUploadedVideosReport();
+    if (!report.totalVideos) {
+      return { generatedAt: new Date().toISOString(), hasData: false,
+        message: 'No uploaded videos yet — upload some content to get a strategy review.' };
+    }
+
+    const withStats = report.videos.filter(v => v.stats);
+    const avg = (arr) => arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
+    const byKind = (kind) => withStats.filter(v => v.kind === kind);
+
+    // Deterministic facts (don't trust the LLM to do arithmetic).
+    const shorts = byKind('short'), longs = byKind('long');
+    const facts = {
+      totalUploaded: report.totalVideos,
+      withStats: withStats.length,
+      totalViews: report.totals.views,
+      avgViewsShort: Math.round(avg(shorts.map(v => v.stats.views))),
+      avgViewsLong: Math.round(avg(longs.map(v => v.stats.views))),
+      shortsCount: shorts.length,
+      longsCount: longs.length,
+      costPerView: report.totals.costPerView,
+      totalCost: report.totals.totalCost,
+      topVideos: withStats.slice(0, 5).map(v => ({ title: v.title, kind: v.kind, views: v.stats.views, cost: v.costTotal })),
+      bottomVideos: withStats.slice(-3).map(v => ({ title: v.title, kind: v.kind, views: v.stats.views })),
+    };
+
+    // Quick rule-based takeaways (always available, even without the LLM).
+    const takeaways = [];
+    if (shorts.length && longs.length) {
+      takeaways.push(facts.avgViewsShort >= facts.avgViewsLong
+        ? `Shorts outperform long videos (${facts.avgViewsShort} vs ${facts.avgViewsLong} avg views) — lean into Shorts.`
+        : `Long videos outperform Shorts (${facts.avgViewsLong} vs ${facts.avgViewsShort} avg views).`);
+    }
+    if (facts.topVideos[0]) takeaways.push(`Best video: "${facts.topVideos[0].title}" (${facts.topVideos[0].views} views).`);
+    if (facts.costPerView != null) takeaways.push(`Channel cost efficiency: $${facts.costPerView}/view.`);
+
+    // LLM recommendations (optional).
+    let recommendations = [];
+    if (this.openai) {
+      try {
+        const resp = await this.openai.chat.completions.create({
+          model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+          messages: [
+            { role: 'system', content: 'You are a YouTube growth strategist for a football/soccer channel. ' +
+              'Given real performance data, return ONLY a JSON array of 3-5 short, concrete, actionable recommendations ' +
+              '(strings) to get more views from future videos. Reference the data. No preamble, no markdown.' },
+            { role: 'user', content: `Performance data (JSON):\n${JSON.stringify(facts, null, 2)}\n\n` +
+              'What specific topics, formats (Short vs long), or titles should the channel make more of, and what to avoid?' },
+          ],
+          temperature: 0.7, max_tokens: 600,
+        });
+        const txt = resp.choices[0].message.content.trim().replace(/^```json?\n?/i, '').replace(/\n?```$/i, '');
+        recommendations = JSON.parse(txt);
+      } catch (e) {
+        this.logger.warn(`Strategy LLM recommendations failed: ${e.message}`);
+      }
+    }
+
+    const result = { generatedAt: new Date().toISOString(), hasData: true, facts, takeaways, recommendations };
+
+    // Persist latest.
+    try {
+      const fs = require('fs');
+      const path = require('path');
+      const out = path.join(__dirname, '..', 'data', 'strategy-review.json');
+      fs.mkdirSync(path.dirname(out), { recursive: true });
+      fs.writeFileSync(out, JSON.stringify(result, null, 2));
+    } catch (e) { this.logger.warn(`Could not persist strategy review: ${e.message}`); }
+
+    return result;
+  }
+
+  // Return the last persisted strategy review (or null).
+  getLastStrategyReview() {
+    try {
+      const fs = require('fs');
+      const path = require('path');
+      return JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'data', 'strategy-review.json'), 'utf8'));
+    } catch { return null; }
   }
 
   async getRecentAnalytics(days = 7) {
