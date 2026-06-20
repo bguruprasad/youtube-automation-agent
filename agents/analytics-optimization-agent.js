@@ -657,6 +657,89 @@ class AnalyticsOptimizationAgent {
     return total > 0 ? ((mobile / total) * 100).toFixed(1) : '0';
   }
 
+  // On-demand report for videos actually uploaded via the dashboard. Uploads
+  // are tracked as youtube_upload.json markers in each output folder (NOT in the
+  // publish_schedule table), so we read those markers, batch-fetch current live
+  // stats from the YouTube Data API, and merge with local metadata (title/cost).
+  // Works for both long videos (output/) and Shorts (output/shorts/).
+  async getUploadedVideosReport() {
+    const fs = require('fs');
+    const path = require('path');
+    const root = path.join(__dirname, '..', 'output');
+
+    // Collect { videoId, url, privacy, uploadedAt, folder, kind, title, cost }.
+    const collect = (dir, kind) => {
+      const out = [];
+      let entries = [];
+      try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return out; }
+      for (const e of entries) {
+        if (!e.isDirectory() || e.name === 'shorts') continue;
+        const folder = path.join(dir, e.name);
+        let marker;
+        try { marker = JSON.parse(fs.readFileSync(path.join(folder, 'youtube_upload.json'), 'utf8')); }
+        catch { continue; } // not uploaded
+        if (!marker.videoId) continue;
+        let title = e.name, cost = null;
+        try {
+          const s = JSON.parse(fs.readFileSync(path.join(folder, 'script.json'), 'utf8'));
+          title = s.title || title; cost = s.cost || null;
+        } catch {}
+        out.push({ videoId: marker.videoId, url: marker.url, privacy: marker.privacy,
+          uploadedAt: marker.uploadedAt, folder: e.name, kind, title, cost });
+      }
+      return out;
+    };
+
+    const videos = [...collect(root, 'long'), ...collect(path.join(root, 'shorts'), 'short')];
+    if (!videos.length) return { totalVideos: 0, videos: [], totals: null, apiAvailable: !!this.youtube };
+
+    // Batch-fetch live stats (50 ids/call) when the API is configured.
+    const byId = {};
+    if (this.youtube) {
+      try {
+        for (let i = 0; i < videos.length; i += 50) {
+          const ids = videos.slice(i, i + 50).map(v => v.videoId);
+          const resp = await this.youtube.videos.list({ part: 'snippet,statistics', id: ids.join(',') });
+          for (const item of (resp.data.items || [])) {
+            byId[item.id] = {
+              title: item.snippet?.title,
+              publishedAt: item.snippet?.publishedAt,
+              views: parseInt(item.statistics?.viewCount) || 0,
+              likes: parseInt(item.statistics?.likeCount) || 0,
+              comments: parseInt(item.statistics?.commentCount) || 0,
+            };
+          }
+        }
+      } catch (err) {
+        this.logger.warn(`Live stats fetch failed (${err.message}); returning markers without stats`);
+      }
+    }
+
+    const enriched = videos.map(v => {
+      const stats = byId[v.videoId] || null;
+      return {
+        ...v,
+        title: stats?.title || v.title,
+        stats, // { views, likes, comments, publishedAt } or null
+        costTotal: v.cost?.total ?? null,
+      };
+    }).sort((a, b) => (b.stats?.views || 0) - (a.stats?.views || 0));
+
+    // Channel-level rollups.
+    const withStats = enriched.filter(v => v.stats);
+    const sum = (k) => withStats.reduce((s, v) => s + (v.stats[k] || 0), 0);
+    const totalCost = enriched.reduce((s, v) => s + (v.costTotal || 0), 0);
+    const totals = {
+      videos: enriched.length,
+      withStats: withStats.length,
+      views: sum('views'), likes: sum('likes'), comments: sum('comments'),
+      totalCost: Number(totalCost.toFixed(4)),
+      costPerView: sum('views') > 0 ? Number((totalCost / sum('views')).toFixed(5)) : null,
+    };
+
+    return { totalVideos: enriched.length, videos: enriched, totals, apiAvailable: !!this.youtube };
+  }
+
   async getRecentAnalytics(days = 7) {
     const recentReports = Array.from(this.performanceData.values())
       .filter(report => {

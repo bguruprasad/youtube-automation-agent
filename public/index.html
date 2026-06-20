@@ -399,6 +399,19 @@
     .run-badge.success { background: rgba(52,211,153,0.15); color: var(--green); }
     .run-badge.error   { background: rgba(248,113,113,0.15); color: var(--red); }
     .run-badge.running { background: rgba(251,191,36,0.15); color: var(--yellow); }
+
+    /* Analytics */
+    .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; margin-bottom: 18px; }
+    .stat-card { background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; }
+    .stat-num { font-size: 1.5rem; font-weight: 700; color: var(--accent); }
+    .stat-lbl { font-size: 0.78rem; color: var(--text-dim); margin-top: 2px; }
+    .analytics-table { width: 100%; border-collapse: collapse; font-size: 0.86rem; }
+    .analytics-table th, .analytics-table td { padding: 8px 10px; border-bottom: 1px solid var(--border); text-align: left; }
+    .analytics-table th { color: var(--text-dim); font-weight: 600; }
+    .analytics-table tbody tr:hover { background: var(--surface-2); }
+    .kind-badge { font-size: 0.74rem; white-space: nowrap; }
+    .kind-badge.short { color: #c084fc; }
+    .kind-badge.long { color: #58a6ff; }
   </style>
 </head>
 <body>
@@ -416,6 +429,7 @@
       <button class="tab active" data-tab="long" onclick="switchTab('long')">🎬 Long Videos</button>
       <button class="tab" data-tab="shorts" onclick="switchTab('shorts')">📱 Shorts</button>
       <button class="tab" data-tab="schedule" onclick="switchTab('schedule')">⚙️ Schedule</button>
+      <button class="tab" data-tab="analytics" onclick="switchTab('analytics')">📊 Analytics</button>
     </div>
 
     <!-- ===== LONG VIDEOS TAB ===== -->
@@ -506,6 +520,20 @@
       </div>
     </div>
     </div><!-- /tab-schedule -->
+
+    <!-- ===== ANALYTICS TAB ===== -->
+    <div class="tab-panel" id="tab-analytics" style="display:none;">
+    <div class="section">
+      <div class="section-title" style="justify-content:space-between;">
+        <span>📊 Video Performance</span>
+        <button class="btn btn-sm btn-outline" onclick="loadVideoAnalytics()">Refresh</button>
+      </div>
+      <div id="analytics-summary"></div>
+      <div id="analytics-videos">
+        <div class="empty-state">Loading analytics…</div>
+      </div>
+    </div>
+    </div><!-- /tab-analytics -->
   </div>
 
   <!-- Info modal: generation details & cost -->
@@ -1185,14 +1213,64 @@
       }
     }
 
+    // --- Video Analytics ---
+    function fmtNum(n) { return (n == null) ? '—' : Number(n).toLocaleString(); }
+
+    async function loadVideoAnalytics() {
+      const summary = document.getElementById('analytics-summary');
+      const list = document.getElementById('analytics-videos');
+      list.innerHTML = '<div class="spinner-wrap" style="margin-top:14px"><div class="spinner"></div><span>Fetching live YouTube stats…</span></div>';
+      summary.innerHTML = '';
+      try {
+        const res = await fetch('/analytics/videos');
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || 'Failed');
+        if (!data.totalVideos) {
+          list.innerHTML = '<div class="empty-state">No uploaded videos yet. Upload from the Long Videos or Shorts tab to see analytics.</div>';
+          return;
+        }
+        const t = data.totals;
+        const apiNote = data.apiAvailable ? '' :
+          '<p class="info-note" style="color:var(--yellow)">YouTube API not configured — live view/like counts unavailable; showing uploaded videos only.</p>';
+        summary.innerHTML = `
+          <div class="stat-grid">
+            <div class="stat-card"><div class="stat-num">${fmtNum(t.views)}</div><div class="stat-lbl">Total views</div></div>
+            <div class="stat-card"><div class="stat-num">${fmtNum(t.likes)}</div><div class="stat-lbl">Likes</div></div>
+            <div class="stat-card"><div class="stat-num">${fmtNum(t.comments)}</div><div class="stat-lbl">Comments</div></div>
+            <div class="stat-card"><div class="stat-num">$${(t.totalCost||0).toFixed(2)}</div><div class="stat-lbl">Total gen cost</div></div>
+            <div class="stat-card"><div class="stat-num">${t.costPerView!=null?'$'+t.costPerView.toFixed(4):'—'}</div><div class="stat-lbl">Cost / view</div></div>
+          </div>${apiNote}`;
+
+        list.innerHTML = '<table class="analytics-table"><thead><tr>' +
+          '<th>Video</th><th>Type</th><th style="text-align:right">Views</th><th style="text-align:right">Likes</th>' +
+          '<th style="text-align:right">Comments</th><th style="text-align:right">Cost</th><th></th>' +
+          '</tr></thead><tbody>' +
+          data.videos.map(v => `
+            <tr>
+              <td>${escHtml(v.title || v.folder)}</td>
+              <td><span class="kind-badge ${v.kind}">${v.kind === 'short' ? '📱 Short' : '🎬 Long'}</span></td>
+              <td style="text-align:right">${fmtNum(v.stats?.views)}</td>
+              <td style="text-align:right">${fmtNum(v.stats?.likes)}</td>
+              <td style="text-align:right">${fmtNum(v.stats?.comments)}</td>
+              <td style="text-align:right">${v.costTotal!=null?'$'+v.costTotal.toFixed(3):'—'}</td>
+              <td style="text-align:right"><a href="${escHtml(v.url||'#')}" target="_blank" class="btn btn-sm btn-outline">View</a></td>
+            </tr>`).join('') +
+          '</tbody></table>';
+      } catch (err) {
+        list.innerHTML = `<div class="empty-state" style="color:var(--red)">Failed to load analytics: ${escHtml(err.message)}</div>`;
+      }
+    }
+
     // --- Init ---
     function switchTab(name) {
       document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
       document.getElementById('tab-long').style.display = name === 'long' ? '' : 'none';
       document.getElementById('tab-shorts').style.display = name === 'shorts' ? '' : 'none';
       document.getElementById('tab-schedule').style.display = name === 'schedule' ? '' : 'none';
+      document.getElementById('tab-analytics').style.display = name === 'analytics' ? '' : 'none';
       if (name === 'shorts') loadShorts();
       if (name === 'schedule') loadAutomation();
+      if (name === 'analytics') loadVideoAnalytics();
     }
 
     checkHealth();

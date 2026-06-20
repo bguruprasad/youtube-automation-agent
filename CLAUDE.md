@@ -76,7 +76,8 @@ When you need to understand the docs or project content:
 - `POST /generate` — start generation
 - `GET /outputs` — list generated output folders
 - `GET /output/:folder/:file` — fetch specific output file
-- `GET /analytics` — analytics data
+- `GET /analytics` — channel summary from in-memory reports (legacy; reads `analytics_reports` DB rows, which are only written by the daily job analyzing `publish_schedule` `published` rows — currently empty since dashboard uploads don't create those rows)
+- `GET /analytics/videos` — **per-video report for dashboard uploads** (`AnalyticsOptimizationAgent.getUploadedVideosReport()`): scans `output/**/youtube_upload.json` markers, batch-fetches live YouTube stats (`youtube.videos.list`, 50 ids/call), merges with `script.json` cost → views/likes/comments + **cost-per-view**. Powers the dashboard **Analytics tab**. Works without the daily job; degrades to markers-only if the YT API isn't configured.
 - `GET /schedule` — schedule info
 - `POST /publish/:contentId` — publish scheduled content
 

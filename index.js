@@ -193,6 +193,17 @@ class YouTubeAutomationAgent {
       }
     });
 
+    // Per-video analytics for everything uploaded via the dashboard (reads
+    // youtube_upload.json markers + live YouTube stats). Powers the Analytics tab.
+    this.app.get('/analytics/videos', async (req, res) => {
+      try {
+        const report = await this.agents.analytics.getUploadedVideosReport();
+        res.json({ success: true, ...report });
+      } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+      }
+    });
+
     // Get upcoming schedule
     this.app.get('/schedule', async (req, res) => {
       try {
