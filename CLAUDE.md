@@ -93,8 +93,18 @@ When you need to understand the docs or project content:
   credits, $0). The summary is persisted into the run's `script.json` as `cost`
   (+ a `meta` block: resolution, duration, models, image count). `/outputs` and
   `/shorts` surface both; the dashboard shows them via an ⓘ button → info modal.
-  Pre-metering folders have `cost:null` (panel shows a graceful fallback). Rates in
-  `cost-meter.js` are approximate published prices — update RATES when they change.
+  Rates in `cost-meter.js` are approximate published prices — update RATES when
+  they change.
+- **Backfill for old folders** (`scripts/backfill-costs.js` + `estimateFromFolder`
+  in `cost-meter.js`): reconstructs estimated cost for folders generated before
+  metering, from on-disk assets (counts `assets/*.png` >1KB so placeholder images
+  from simulation fallbacks aren't billed; thumbnail; `script_tts.txt` length).
+  Writes `cost` (with `backfilled:true`) + `meta` into script.json. Dry-run by
+  default; `--apply` writes; `--force --apply` re-estimates folders that already
+  have a *backfilled* cost (never overwrites a live-metered run). Dashboard tags
+  these "(est)". Long videos backfill ~$0.58–0.73, Shorts ~$0.04–0.05 (NOTE: this
+  is higher than the old "~$0.20–0.30/run" estimate above — that figure used a
+  rougher $0.04/image; the meter uses real gpt-image-1 size×quality rates).
 
 ### Video Assembly (in `utils/ai-video-generator.js`)
 - Output: 1920×1080, 30fps, with audio.

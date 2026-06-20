@@ -79,4 +79,57 @@ class CostMeter {
   }
 }
 
-module.exports = { CostMeter };
+// Reconstruct an estimated cost for an already-generated folder that predates
+// live metering. Reads what's recoverable from disk:
+//   - image count  : assets/*.png (scene images) + thumbnail.png
+//   - TTS chars    : script_tts.txt length
+// Image size/quality are inferred from format (matches the params the pipeline
+// actually used). Returns a cost summary with `backfilled:true`, or null if the
+// folder lacks the inputs. Synchronous (uses fs sync) for simple script use.
+function estimateFromFolder(folderPath, { format = 'long' } = {}) {
+  const fs = require('fs');
+  const path = require('path');
+  const meter = new CostMeter();
+
+  // Scene images. Skip sub-1KB files: those are placeholder PNGs written when
+  // image generation fell back to simulation (e.g. a 429), so they were never
+  // actually billed. (Same >1000-byte "valid asset" threshold the assembler uses.)
+  let sceneCount = 0;
+  try {
+    const dir = path.join(folderPath, 'assets');
+    sceneCount = fs.readdirSync(dir)
+      .filter((f) => /\.png$/i.test(f))
+      .filter((f) => { try { return fs.statSync(path.join(dir, f)).size > 1000; } catch { return false; } })
+      .length;
+  } catch { /* no assets dir */ }
+
+  const isShort = format === 'short';
+  const sceneSize = isShort ? '1024x1536' : '1536x1024';
+  const sceneQual = isShort ? 'low' : 'medium';
+  if (sceneCount > 0) {
+    meter.recordImage(sceneSize, sceneQual, { count: sceneCount, label: 'Scene image' });
+  }
+
+  // Thumbnail (long videos generate a fresh high-quality one; shorts reuse a
+  // frame, so no separate charge). Skip placeholders (sub-1KB).
+  if (!isShort) {
+    const thumb = path.join(folderPath, 'thumbnail.png');
+    let thumbReal = false;
+    try { thumbReal = fs.statSync(thumb).size > 1000; } catch {}
+    if (thumbReal) meter.recordImage('1536x1024', 'high', { label: 'Thumbnail' });
+  }
+
+  // TTS narration.
+  let chars = 0;
+  try { chars = fs.statSync(path.join(folderPath, 'script_tts.txt')).size; } catch {}
+  if (chars > 0) meter.recordOpenAITTS(chars, 'tts-1-hd');
+
+  if (!meter.items.length) return null;
+  const summary = meter.summary();
+  summary.backfilled = true;
+  summary.note = 'Estimated retroactively from on-disk assets (image count + TTS ' +
+    'length) using published API rates. Not from live metering.';
+  return summary;
+}
+
+module.exports = { CostMeter, estimateFromFolder };
