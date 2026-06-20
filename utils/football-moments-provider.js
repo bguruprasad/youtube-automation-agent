@@ -77,6 +77,78 @@ async function getRecentMoment(logger) {
   }
 }
 
+// Suggest several Short ideas up-front so the user can see what the AI intends
+// to make and pick which ones to actually produce (mirrors long-video topic
+// suggestions). Each suggestion = { title, hint, angle, hook, recent }.
+//   - title : the Short's subject (also the `moment` passed to /generate-short)
+//   - hint  : factual context that seeds the script + visuals
+//   - angle : 1-line "why this works" (the AI's reasoning, shown in the card)
+//   - hook  : the opening line the Short would likely lead with
+// Uses OpenAI when an `openai` client is provided; otherwise falls back to a
+// random sample of curated moments (with generic angle/hook).
+async function suggestMoments({ count = 3, openai = null, logger = null } = {}) {
+  count = Math.max(1, Math.min(5, parseInt(count) || 3));
+
+  // Curated fallback: sample distinct moments, synthesize angle/hook.
+  const curatedFallback = () => {
+    const pool = [...CURATED_MOMENTS];
+    const out = [];
+    while (out.length < count && pool.length) {
+      const idx = Math.floor(Math.random() * pool.length);
+      const m = pool.splice(idx, 1)[0];
+      out.push({
+        title: m.title,
+        hint: m.hint,
+        angle: 'Iconic, evergreen moment with built-in search demand.',
+        hook: `This is the story of ${m.title}.`,
+        recent: false,
+      });
+    }
+    return out;
+  };
+
+  if (!openai) return curatedFallback();
+
+  try {
+    const response = await openai.chat.completions.create({
+      model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+      messages: [
+        {
+          role: 'system',
+          content: `You are a YouTube Shorts strategist for a football/soccer channel. ` +
+            `Propose single-moment Short ideas (one dramatic moment each, <=60s vertical). ` +
+            `Return ONLY a JSON array of objects with keys: ` +
+            `title (the moment, e.g. "Maradona's Hand of God"), ` +
+            `hint (1-2 sentences of factual context to seed the script), ` +
+            `angle (1 sentence on why this Short would perform well), ` +
+            `hook (the punchy opening line the Short should start with). No markdown.`,
+        },
+        {
+          role: 'user',
+          content: `Suggest ${count} football Short ideas worth making right now. ` +
+            `Favor dramatic, instantly-recognizable moments with strong visual potential. ` +
+            `Keep facts accurate; do not invent scorelines.`,
+        },
+      ],
+      temperature: 0.9,
+      max_tokens: 900,
+    });
+    const content = response.choices[0].message.content.trim();
+    const jsonStr = content.replace(/^```json?\n?/i, '').replace(/\n?```$/i, '');
+    const ideas = JSON.parse(jsonStr);
+    return ideas.slice(0, count).map((i) => ({
+      title: i.title || 'Untitled moment',
+      hint: i.hint || '',
+      angle: i.angle || '',
+      hook: i.hook || '',
+      recent: false,
+    }));
+  } catch (e) {
+    if (logger) logger.warn(`Short-idea suggestion failed, using curated: ${e.message}`);
+    return curatedFallback();
+  }
+}
+
 // Main entry: returns one moment {title, hint, recent?}.
 // `preferRecent` (default true) tries the API first when configured, then
 // falls back to a curated moment.
@@ -88,4 +160,4 @@ async function getMoment({ preferRecent = true, logger = null } = {}) {
   return { ...pickRandom(CURATED_MOMENTS), recent: false };
 }
 
-module.exports = { getMoment, getRecentMoment, CURATED_MOMENTS };
+module.exports = { getMoment, getRecentMoment, suggestMoments, CURATED_MOMENTS };

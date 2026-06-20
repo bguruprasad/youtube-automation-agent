@@ -36,6 +36,17 @@ Shorts, and Shorts repurposed from existing long videos. Output → `output/shor
       for quick one-click upload (alongside the actions-row Upload Short button).
 - [x] 10. **End-to-end test.** One Short each mode → upload unlisted to Halftime Replay
       → verify vertical, in-frame text, audio sync, SEO. Then report for review.
+- [x] 11. **Short Ideas suggestions (parity with long-video topic suggestions).**
+      `GET /suggest-shorts?count=3` → `momentsProvider.suggestMoments()` (OpenAI when
+      available, curated fallback) returns {title, hint, angle, hook}. Shorts tab shows
+      selectable idea cards (checkboxes, all checked by default) + "Create Selected
+      Shorts" which generates each via /generate-short sequentially. Lets the user see
+      what the AI intends to make before committing.
+- [x] 11b. **Optional auto-upload after creating.** "Upload to YouTube after creating"
+      checkbox + privacy dropdown (defaults to Unlisted) in the Short Ideas actions row.
+      When checked, each Short is uploaded via /upload-short/<folder> right after it's
+      built (serial: build → upload → next). Public selection triggers a confirm().
+      Status line reports both Created N/total and Uploaded N/done.
 
 ## Deferred (noted, NOT building now)
 - Configurable output path (future `OUTPUT_DIR` env). Structure code so it's easy to add.

@@ -307,6 +307,23 @@ class YouTubeAutomationAgent {
       }
     });
 
+    // Suggest Short ideas before committing to generation. Shows what the AI
+    // intends to make (title + angle + hook) so the user can pick which to build.
+    this.app.get('/suggest-shorts', async (req, res) => {
+      try {
+        const momentsProvider = require('./utils/football-moments-provider');
+        const count = parseInt(req.query.count) || 3;
+        const suggestions = await momentsProvider.suggestMoments({
+          count,
+          openai: this.agents.strategy.openai || null,
+          logger: this.logger,
+        });
+        res.json({ success: true, suggestions });
+      } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+      }
+    });
+
     // Mode A - Fresh single-moment Short. Optional body: { moment } to force a
     // specific subject; otherwise the moments provider picks one (curated, or
     // recent via football-data.org when configured).

@@ -410,6 +410,18 @@
 
     <!-- ===== SHORTS TAB ===== -->
     <div class="tab-panel" id="tab-shorts" style="display:none;">
+    <!-- Short Ideas (AI suggestions before creating) -->
+    <div class="section">
+      <div class="section-title">💡 Short Ideas</div>
+      <div class="form-row">
+        <span style="flex:1;color:var(--text-dim);font-size:0.85rem;align-self:center;">
+          Let the AI propose a few Short ideas. Pick the ones you want, then create them.
+        </span>
+        <button class="btn" id="suggest-shorts-btn" onclick="getShortSuggestions()">Get Ideas</button>
+      </div>
+      <div id="short-suggestions-container"></div>
+    </div>
+
     <!-- YouTube Shorts (vertical) -->
     <div class="section">
       <div class="section-title" style="justify-content:space-between;">
@@ -823,6 +835,120 @@
       } finally {
         btn.disabled = false; btn.textContent = original;
       }
+    }
+
+    // --- Short Ideas (AI suggestions) ---
+    async function getShortSuggestions() {
+      const btn = document.getElementById('suggest-shorts-btn');
+      const container = document.getElementById('short-suggestions-container');
+      btn.disabled = true;
+      btn.textContent = 'Thinking...';
+      container.innerHTML = '<div class="spinner-wrap" style="margin-top:14px"><div class="spinner"></div><span>AI is thinking up Short ideas...</span></div>';
+
+      try {
+        const res = await fetch('/suggest-shorts?count=3');
+        const data = await res.json();
+        if (!data.success || !data.suggestions?.length) {
+          container.innerHTML = '<div class="empty-state">No ideas returned. Try again.</div>';
+          return;
+        }
+
+        const cards = data.suggestions.map((s, i) => {
+          const title = s.title || 'Untitled moment';
+          return `
+            <div class="suggestion-card">
+              <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:8px;">
+                <input type="checkbox" class="short-idea-check" data-title="${escAttr(title)}" checked />
+                <h4 style="margin:0;">${escHtml(title)}</h4>
+              </label>
+              ${s.hook ? `<p style="font-style:italic;">“${escHtml(s.hook)}”</p>` : ''}
+              ${s.angle ? `<p>${escHtml(s.angle)}</p>` : ''}
+              ${s.hint ? `<p style="color:var(--text-dim);font-size:0.8rem;">${escHtml(s.hint)}</p>` : ''}
+            </div>`;
+        }).join('');
+
+        container.innerHTML =
+          '<div class="suggestions-grid">' + cards + '</div>' +
+          '<div class="output-actions" style="margin-top:12px;">' +
+            '<button class="btn btn-green btn-sm" id="create-shorts-btn" onclick="createSelectedShorts(this)">⚡ Create Selected Shorts</button>' +
+            '<label style="display:flex;align-items:center;gap:6px;font-size:0.8rem;cursor:pointer;">' +
+              '<input type="checkbox" id="short-autoupload" onchange="document.getElementById(\'short-autoupload-privacy\').style.display=this.checked?\'\':\'none\'" /> Upload to YouTube after creating' +
+            '</label>' +
+            '<select id="short-autoupload-privacy" class="short-privacy" style="display:none;">' +
+              '<option value="unlisted" selected>Unlisted</option>' +
+              '<option value="public">Public</option>' +
+              '<option value="private">Private</option>' +
+            '</select>' +
+            '<span id="short-suggest-status" style="font-size:0.8rem;align-self:center;"></span>' +
+          '</div>';
+      } catch (err) {
+        container.innerHTML = `<div class="empty-state" style="color:var(--red)">Error: ${escHtml(err.message)}</div>`;
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Get Ideas';
+      }
+    }
+
+    async function createSelectedShorts(btn) {
+      const checks = Array.from(document.querySelectorAll('.short-idea-check:checked'));
+      const statusEl = document.getElementById('short-suggest-status');
+      if (!checks.length) {
+        if (statusEl) { statusEl.style.color = 'var(--red,#f85149)'; statusEl.textContent = 'Select at least one idea.'; }
+        return;
+      }
+      const titles = checks.map(c => c.dataset.title);
+
+      // Optional auto-upload after each Short is built.
+      const autoUpload = !!document.getElementById('short-autoupload')?.checked;
+      const privacy = document.getElementById('short-autoupload-privacy')?.value || 'unlisted';
+      if (autoUpload && privacy === 'public' &&
+          !confirm(`Auto-upload ${titles.length} Short(s) to YouTube as PUBLIC on the live channel?`)) {
+        return;
+      }
+
+      btn.disabled = true;
+      const original = btn.textContent;
+      let done = 0, failed = 0, uploaded = 0, uploadFailed = 0;
+
+      // Generate sequentially — Short production is heavy (images + ffmpeg).
+      for (const title of titles) {
+        if (statusEl) { statusEl.style.color = ''; statusEl.textContent = `Creating ${done + failed + 1}/${titles.length}: ${title}...`; }
+        btn.textContent = `⏳ ${done + failed + 1}/${titles.length}`;
+        try {
+          const res = await fetch('/generate-short', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ moment: title })
+          });
+          const data = await res.json();
+          if (!data.success) { failed++; continue; }
+          done++;
+
+          if (autoUpload && data.folder) {
+            if (statusEl) statusEl.textContent = `Uploading ${done}/${titles.length}: ${title}...`;
+            btn.textContent = `⬆ ${done}/${titles.length}`;
+            try {
+              const up = await fetch('/upload-short/' + encodeURIComponent(data.folder), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ privacy })
+              });
+              const upData = await up.json();
+              if (upData.success) uploaded++; else uploadFailed++;
+            } catch { uploadFailed++; }
+          }
+        } catch { failed++; }
+      }
+
+      btn.disabled = false;
+      btn.textContent = original;
+      if (statusEl) {
+        statusEl.style.color = (failed || uploadFailed) ? 'var(--red,#f85149)' : 'var(--green,#3fb950)';
+        let msg = `✅ Created ${done}/${titles.length}` + (failed ? ` (${failed} failed)` : '');
+        if (autoUpload) msg += ` · ⬆ Uploaded ${uploaded}/${done}` + (uploadFailed ? ` (${uploadFailed} failed)` : '');
+        statusEl.textContent = msg;
+      }
+      if (typeof loadShorts === 'function') setTimeout(loadShorts, 1000);
     }
 
     // --- Helpers ---
