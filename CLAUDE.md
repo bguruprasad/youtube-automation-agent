@@ -86,6 +86,15 @@ When you need to understand the docs or project content:
 - Image gen: `gpt-image-1` (NOT dall-e-3), ~$0.04/image × 5 images = ~$0.20
 - TTS: OpenAI `tts-1`, voice `onyx`, ~$0.06. 4096-char limit handled by sentence-boundary chunking; chunks concatenated with ffmpeg.
 - Text: `gpt-4o-mini`, negligible cost.
+- **Per-run cost metering** (`utils/cost-meter.js`): a `CostMeter` is attached to
+  `production.aiVideoGenerator.costMeter` at the start of each `/generate`,
+  `/generate-short`, `/short-from` run. The generator records each billable call
+  (image by size×quality, OpenAI TTS by char, LLM by token; ElevenLabs counted as
+  credits, $0). The summary is persisted into the run's `script.json` as `cost`
+  (+ a `meta` block: resolution, duration, models, image count). `/outputs` and
+  `/shorts` surface both; the dashboard shows them via an ⓘ button → info modal.
+  Pre-metering folders have `cost:null` (panel shows a graceful fallback). Rates in
+  `cost-meter.js` are approximate published prices — update RATES when they change.
 
 ### Video Assembly (in `utils/ai-video-generator.js`)
 - Output: 1920×1080, 30fps, with audio.

@@ -21,7 +21,11 @@ const execAsync = promisify(exec);
 class AIVideoGenerator {
   constructor(credentials) {
     this.logger = new Logger('AIVideoGenerator');
-    
+
+    // Optional per-run cost meter. Callers set `this.costMeter = new CostMeter()`
+    // before a run and read `.summary()` after. Null = metering disabled (no-op).
+    this.costMeter = null;
+
     // Initialize AI services with graceful fallback
     const openaiKey = credentials.openai?.apiKey || process.env.OPENAI_API_KEY;
     const replicateKey = credentials.replicate?.apiKey || process.env.REPLICATE_API_KEY;
@@ -72,6 +76,7 @@ class AIVideoGenerator {
   }
 
   async generateElevenLabsTTS(text, outputPath) {
+    if (this.costMeter) this.costMeter.recordElevenLabsTTS(text.length);
     const url = `https://api.elevenlabs.io/v1/text-to-speech/${this.elevenLabsVoiceId}`;
     
     const data = {
@@ -133,6 +138,7 @@ class AIVideoGenerator {
   async generateOpenAITTS(text, outputPath) {
     const chunks = this.chunkText(text, 4096);
     this.logger.info(`TTS: processing ${chunks.length} chunk(s) (${text.length} chars total)`);
+    if (this.costMeter) this.costMeter.recordOpenAITTS(text.length, 'tts-1-hd');
 
     if (chunks.length === 1) {
       const response = await this.openai.audio.speech.create({
@@ -195,6 +201,9 @@ class AIVideoGenerator {
         quality: imageOpts.quality || "medium"
       };
       const response = await this.openai.images.generate(params);
+      if (this.costMeter) {
+        this.costMeter.recordImage(params.size, params.quality, { count: response.data.length, label: 'Scene image' });
+      }
 
       const localPaths = [];
 
@@ -919,6 +928,9 @@ class AIVideoGenerator {
         size: "1536x1024",
         quality: "high"
       });
+      if (this.costMeter) {
+        this.costMeter.recordImage('1536x1024', 'high', { label: 'Thumbnail' });
+      }
 
       const thumbnailDir = path.join(__dirname, '..', 'uploads', 'thumbnails');
       await fs.mkdir(thumbnailDir, { recursive: true });

@@ -356,6 +356,36 @@
     }
     .tab:hover { color: var(--text); }
     .tab.active { color: var(--accent, #58a6ff); border-bottom-color: var(--accent, #58a6ff); }
+
+    /* Info (i) button + modal */
+    .info-btn {
+      background: transparent; border: 1px solid var(--border); color: var(--text-dim);
+      width: 20px; height: 20px; border-radius: 50%; font-size: 0.72rem; line-height: 1;
+      cursor: pointer; padding: 0; vertical-align: middle; margin-left: 4px;
+    }
+    .info-btn:hover { color: var(--accent); border-color: var(--accent); }
+    .info-modal {
+      display: none; position: fixed; inset: 0; z-index: 100;
+      background: rgba(0,0,0,0.6); align-items: center; justify-content: center; padding: 20px;
+    }
+    .info-modal-card {
+      position: relative; background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 24px; max-width: 560px; width: 100%;
+      max-height: 80vh; overflow-y: auto;
+    }
+    .info-close {
+      position: absolute; top: 12px; right: 12px; background: transparent; border: none;
+      color: var(--text-dim); font-size: 1rem; cursor: pointer;
+    }
+    .info-close:hover { color: var(--text); }
+    .info-cost-total {
+      font-size: 1.6rem; font-weight: 700; color: var(--green); margin-bottom: 14px;
+    }
+    .info-cost-total span { font-size: 0.8rem; font-weight: 400; color: var(--text-dim); }
+    .info-table { width: 100%; border-collapse: collapse; font-size: 0.83rem; }
+    .info-table th, .info-table td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+    .info-table th { color: var(--text-dim); font-weight: 600; }
+    .info-note { font-size: 0.76rem; color: var(--text-dim); margin-top: 10px; line-height: 1.4; }
   </style>
 </head>
 <body>
@@ -439,6 +469,14 @@
       </div>
     </div>
     </div><!-- /tab-shorts -->
+  </div>
+
+  <!-- Info modal: generation details & cost -->
+  <div id="info-modal" class="info-modal" onclick="closeInfo(event)">
+    <div class="info-modal-card">
+      <button id="info-close" class="info-close" onclick="closeInfo(event)" title="Close">✕</button>
+      <div id="info-modal-body"></div>
+    </div>
   </div>
 
   <script>
@@ -654,10 +692,12 @@
               <span class="upload-status" data-folder="${folderAttr}"></span>`;
           }
 
+          const infoBtn = infoButton(o.title || o.folder, o.cost, o.meta);
+
           return `
             <div class="output-item">
               <div class="output-info">
-                <h4>${indicators.join(' ')} ${escHtml(o.title || o.folder)}</h4>
+                <h4>${indicators.join(' ')} ${escHtml(o.title || o.folder)} ${infoBtn}</h4>
                 <div class="folder-name">${escHtml(o.folder)}</div>
               </div>
               <div class="output-files">${fileLinks}</div>
@@ -699,8 +739,9 @@
               </select>
               <button class="btn btn-sm btn-upload" data-folder="${f}" onclick="uploadShort(this)">⬆ Upload Short</button>`;
           }
+          const infoBtn = infoButton(s.title || s.folder, s.cost, s.meta);
           return `<div class="output-item">
-              <div class="output-info"><h4>📱 ${escHtml(s.title || s.folder)}</h4>
+              <div class="output-info"><h4>📱 ${escHtml(s.title || s.folder)} ${infoBtn}</h4>
                 <div class="folder-name">${f}</div></div>
               <div class="output-files">${videoLink}</div>
               <div class="output-actions">${act}<span class="short-up-status" data-folder="${f}"></span></div>
@@ -960,6 +1001,60 @@
 
     function escAttr(str) {
       return str.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;');
+    }
+
+    // --- Info (i) panel: cost + generation metadata ---
+    function infoButton(title, cost, meta) {
+      // Stash the data on a global keyed by index so the click handler can read
+      // it without cramming JSON into an attribute.
+      window.__infoData = window.__infoData || [];
+      const idx = window.__infoData.push({ title, cost, meta }) - 1;
+      return `<button class="info-btn" title="Generation details & cost" onclick="showInfo(${idx})">ⓘ</button>`;
+    }
+
+    function fmtUsd(n) { return (n == null) ? '—' : '$' + Number(n).toFixed(3); }
+
+    function showInfo(idx) {
+      const d = (window.__infoData || [])[idx];
+      if (!d) return;
+      const { title, cost, meta } = d;
+      let html = `<h3 style="margin-bottom:12px;">${escHtml(title || 'Details')}</h3>`;
+
+      // Cost section
+      if (cost && cost.total != null) {
+        const rows = (cost.items || []).map(it =>
+          `<tr><td>${escHtml(it.label)}</td><td style="color:var(--text-dim)">${escHtml(it.detail || '')}</td>` +
+          `<td style="text-align:right">${it.provider === 'elevenlabs' ? '<span style="color:var(--text-dim)">credits</span>' : fmtUsd(it.cost)}</td></tr>`
+        ).join('');
+        html += `<div class="info-cost-total">${fmtUsd(cost.total)} <span>estimated total</span></div>` +
+          `<table class="info-table"><thead><tr><th>Item</th><th>Detail</th><th style="text-align:right">Cost</th></tr></thead>` +
+          `<tbody>${rows || '<tr><td colspan="3" style="color:var(--text-dim)">No line items.</td></tr>'}</tbody></table>` +
+          (cost.note ? `<p class="info-note">${escHtml(cost.note)}</p>` : '');
+      } else {
+        html += `<p class="info-note">No cost data recorded for this item (generated before cost tracking, or metering was off).</p>`;
+      }
+
+      // Metadata section
+      if (meta) {
+        const m = [
+          ['Type', meta.type], ['Resolution', meta.resolution],
+          ['Duration', meta.durationSec != null ? meta.durationSec + 's' : null],
+          ['Scenes/images', meta.imageCount],
+          ['Image model', meta.models?.image], ['TTS model', meta.models?.tts],
+          ['Generated', meta.generatedAt ? new Date(meta.generatedAt).toLocaleString() : null],
+        ].filter(([, v]) => v != null && v !== '');
+        html += `<h4 style="margin:16px 0 8px;">Generation</h4><table class="info-table"><tbody>` +
+          m.map(([k, v]) => `<tr><td>${escHtml(k)}</td><td colspan="2">${escHtml(String(v))}</td></tr>`).join('') +
+          `</tbody></table>`;
+      }
+
+      document.getElementById('info-modal-body').innerHTML = html;
+      document.getElementById('info-modal').style.display = 'flex';
+    }
+
+    function closeInfo(e) {
+      if (e && e.target.id !== 'info-modal' && e.target.id !== 'info-close') return;
+      document.getElementById('info-modal').style.display = 'none';
     }
 
     // --- Init ---

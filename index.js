@@ -170,6 +170,8 @@ class YouTubeAutomationAgent {
               createdAt: script.createdAt || null,
               modifiedAt: stat.mtimeMs,
               uploaded, // { videoId, url, privacy, uploadedAt } or null
+              cost: script.cost || null, // { total, byType, items, ... } or null
+              meta: script.meta || null, // { resolution, durationSec, models, ... }
             });
           } catch { /* skip invalid dirs */ }
         }
@@ -297,6 +299,8 @@ class YouTubeAutomationAgent {
               folder: dir, title: script.title,
               hasVideo: files.includes('video.mp4'),
               modifiedAt: stat.mtimeMs, uploaded,
+              cost: script.cost || null,
+              meta: script.meta || null,
             });
           } catch {}
         }
@@ -338,6 +342,11 @@ class YouTubeAutomationAgent {
 
         this.logger.info(`Generating Short for moment: ${moment.title}`);
         const script = await this.agents.scriptWriter.generateShortScript(moment);
+
+        // Start a fresh cost meter for this run (scene images + TTS recorded
+        // against it; produce() embeds the summary into script.json).
+        const { CostMeter } = require('./utils/cost-meter');
+        this.agents.production.aiVideoGenerator.costMeter = new CostMeter();
 
         // Fresh portrait, low-quality images.
         const images = [];
@@ -384,6 +393,10 @@ class YouTubeAutomationAgent {
         } catch {}
         if (!images.length) throw new Error('No source images found to repurpose.');
 
+        // Meter this run (reuses source images, so only TTS is charged here).
+        const { CostMeter } = require('./utils/cost-meter');
+        this.agents.production.aiVideoGenerator.costMeter = new CostMeter();
+
         const srcThumb = path.join(srcPath, 'thumbnail.png');
         const result = await this.shortsProducer.produce(shortScript, images, {
           sourceThumb: require('fs').existsSync(srcThumb) ? srcThumb : null,
@@ -398,7 +411,12 @@ class YouTubeAutomationAgent {
 
   async generateContent(topic = null, style = null, length = 'medium') {
     this.logger.info('Starting content generation pipeline...');
-    
+
+    // Fresh cost meter for this run; thumbnail, scene images, and TTS all run
+    // through this same generator instance and get recorded against it.
+    const { CostMeter } = require('./utils/cost-meter');
+    this.agents.production.aiVideoGenerator.costMeter = new CostMeter();
+
     // Step 1: Strategy
     const strategy = await this.agents.strategy.generateContentStrategy(topic);
     this.logger.info(`Strategy generated: ${strategy.topic}`);

@@ -109,9 +109,29 @@ class ProductionManagementAgent {
       // Mark as ready
       productionData.status = 'ready';
       productionData.timeline.readyForUpload = new Date().toISOString();
-      
+
       await this.db.updateProductionData(productionData);
-      
+
+      // Re-write script.json with cost + generation metadata for the dashboard
+      // (i) info panel. Done last, after all billable calls have run through the
+      // meter attached to this.aiVideoGenerator by the /generate flow.
+      try {
+        const scriptPath = path.join(outputDir, 'script.json');
+        const enriched = { ...script };
+        if (this.aiVideoGenerator.costMeter) enriched.cost = this.aiVideoGenerator.costMeter.summary();
+        enriched.meta = {
+          type: 'long',
+          resolution: '1920x1080',
+          durationSec: script.duration || null,
+          imageCount: (script.mainContent?.sections || []).length || null,
+          models: { image: 'gpt-image-1', tts: this.aiVideoGenerator.elevenLabsApiKey ? 'elevenlabs' : 'tts-1-hd' },
+          generatedAt: new Date().toISOString(),
+        };
+        await fs.writeFile(scriptPath, JSON.stringify(enriched, null, 2));
+      } catch (e) {
+        this.logger.warn(`Could not write cost/meta to script.json: ${e.message}`);
+      }
+
       this.logger.info(`Content processing complete: ${productionId}`);
       return productionData;
     } catch (error) {

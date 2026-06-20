@@ -147,6 +147,19 @@ class ShortsProducer {
     // 6. SEO + persist script.json (with seo embedded for the uploader).
     const seo = await this.buildShortSeo(script);
     const scriptOut = { ...script, seo, format: 'short' };
+
+    // Generation cost + metadata for the dashboard (i) info panel. The meter is
+    // attached to the shared AIVideoGenerator by the /generate-short flow, so it
+    // already holds the scene-image charges generated there plus this TTS run.
+    if (this.gen.costMeter) scriptOut.cost = this.gen.costMeter.summary();
+    scriptOut.meta = {
+      type: 'short',
+      resolution: `${W}x${H}`,
+      durationSec: Math.min(script.duration || 50, shortsConfig.maxDuration),
+      imageCount: images.length,
+      models: { image: 'gpt-image-1', tts: this.gen.elevenLabsApiKey ? 'elevenlabs' : 'tts-1-hd' },
+      generatedAt: new Date().toISOString(),
+    };
     await fs.writeFile(path.join(folderPath, 'script.json'), JSON.stringify(scriptOut, null, 2));
 
     this.logger.info(`Short produced: ${folderPath}`);
