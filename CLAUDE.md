@@ -111,7 +111,7 @@ When you need to understand the docs or project content:
 
 Declared in `package.json`: `@google/generative-ai`, `axios`, `chalk`, `cron`, `dotenv`, `express`, `form-data`, `googleapis`, `inquirer`, `node-cron`, `openai`, `playwright`, `replicate`, `sharp`, `winston`.
 
-⚠️ **`sqlite3` is `require()`d in `database/db.js` (`require('sqlite3').verbose()`) but is NOT listed in `package.json` dependencies.** It resolves only because it's already in `node_modules`; a clean `npm install` on a fresh machine will break the DB layer. Add it to `package.json` if touching deps.
+`sqlite3` is `require()`d in `database/db.js` (`require('sqlite3').verbose()`) and IS listed in `package.json` (`^5.1.6`, installed `5.1.7`). (Earlier docs claimed it was missing — that was stale; verified present 2026-06-20.)
 
 ## Environment / Setup Notes
 

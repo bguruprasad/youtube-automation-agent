@@ -98,9 +98,9 @@ class ShortsProducer {
   async produce(script, images, { sourceThumb = null } = {}) {
     const W = shortsConfig.resolution.width;
     const H = shortsConfig.resolution.height;
-    const date = new Date().toISOString().slice(0, 10);
+    const { folderTimestamp } = require('./timestamp');
     const slug = this.slugify(script.title);
-    const folder = `${date}_${slug}`;
+    const folder = `${folderTimestamp()}_${slug}`;
     const folderPath = path.resolve(shortsConfig.outputDir, folder);
     const assetsDir = path.join(folderPath, 'assets');
     await fs.mkdir(assetsDir, { recursive: true });

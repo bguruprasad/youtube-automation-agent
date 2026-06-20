@@ -129,16 +129,17 @@ class ProductionManagementAgent {
 
   /**
    * Create a clean output directory for this production run.
-   * Structure: output/<date>_<slug>/
+   * Structure: output/<YYYY-MM-DD_HH-MM-SS>_<slug>/ (sortable by creation time).
    */
   async createOutputDir(productionId, title) {
-    const date = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+    const { folderTimestamp } = require('../utils/timestamp');
+    const ts = folderTimestamp();
     const slug = (title || 'untitled')
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/^-|-$/g, '')
       .slice(0, 50);
-    const dirName = `${date}_${slug}`;
+    const dirName = `${ts}_${slug}`;
     const outputDir = path.join(__dirname, '..', 'output', dirName);
     const assetsDir = path.join(outputDir, 'assets');
     await fs.mkdir(assetsDir, { recursive: true });
