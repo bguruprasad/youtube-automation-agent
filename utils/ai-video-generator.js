@@ -53,6 +53,31 @@ class AIVideoGenerator {
     this.azureSpeechRegion = credentials.azure?.speechRegion || process.env.AZURE_SPEECH_REGION;
   }
 
+  // Retry an async OpenAI call with exponential backoff on transient errors
+  // (429 rate-limit / quota, 5xx). gpt-image-1 frequently 429s; without this the
+  // caller silently falls back to a placeholder image, which then breaks video
+  // assembly. Honors a Retry-After header when present.
+  async _withRetry(fn, { tries = 4, baseDelayMs = 2000, label = 'OpenAI call' } = {}) {
+    let lastErr;
+    for (let attempt = 1; attempt <= tries; attempt++) {
+      try {
+        return await fn();
+      } catch (err) {
+        lastErr = err;
+        const status = err?.status || err?.response?.status;
+        const retryable = status === 429 || (status >= 500 && status < 600);
+        if (!retryable || attempt === tries) throw err;
+        const retryAfter = Number(err?.headers?.['retry-after'] || err?.response?.headers?.['retry-after']);
+        const delay = Number.isFinite(retryAfter) && retryAfter > 0
+          ? retryAfter * 1000
+          : baseDelayMs * 2 ** (attempt - 1);
+        this.logger.warn(`${label} failed (${status || err.message}); retry ${attempt}/${tries - 1} in ${Math.round(delay / 1000)}s`);
+        await new Promise((r) => setTimeout(r, delay));
+      }
+    }
+    throw lastErr;
+  }
+
   async generateTTSAudio(text, outputPath) {
     this.logger.info('Generating TTS audio...');
     
@@ -190,17 +215,36 @@ class AIVideoGenerator {
         return await this.simulateVisualAssets(prompt, style, count);
       }
 
-      const enhancedPrompt = this.enhanceVisualPrompt(prompt, style);
-
       // Size/quality are overridable (Shorts use portrait + lower quality).
-      const params = {
+      const baseParams = {
         model: "gpt-image-1",
-        prompt: enhancedPrompt,
         n: 1,
         size: imageOpts.size || "1536x1024", // default landscape for video
         quality: imageOpts.quality || "medium"
       };
-      const response = await this.openai.images.generate(params);
+      const params = { ...baseParams, prompt: this.enhanceVisualPrompt(prompt, style) };
+
+      let response;
+      try {
+        response = await this._withRetry(
+          () => this.openai.images.generate(params),
+          { label: 'Scene image generation' }
+        );
+      } catch (err) {
+        // gpt-image-1's safety system sometimes rejects an otherwise-innocuous
+        // prompt (400). Retrying the same prompt won't help, but a neutral,
+        // de-stylized version (no possessives/marketing words, no named person)
+        // usually passes — better a generic football image than a placeholder.
+        const status = err?.status || err?.response?.status;
+        const isSafety = status === 400 && /safety/i.test(err?.message || '');
+        if (!isSafety) throw err;
+        const safePrompt = this._safeFallbackPrompt(prompt);
+        this.logger.warn(`Image prompt rejected by safety system; retrying with neutral prompt: "${safePrompt}"`);
+        response = await this._withRetry(
+          () => this.openai.images.generate({ ...baseParams, prompt: safePrompt }),
+          { label: 'Scene image generation (safe retry)' }
+        );
+      }
       if (this.costMeter) {
         this.costMeter.recordImage(params.size, params.quality, { count: response.data.length, label: 'Scene image' });
       }
@@ -226,6 +270,23 @@ class AIVideoGenerator {
       this.logger.error('Visual asset generation failed:', error);
       return await this.simulateVisualAssets(prompt, style, count);
     }
+  }
+
+  // Build a neutral, safety-system-friendly image prompt from a rejected one:
+  // drop possessives (named people) and hype/marketing words that can trip the
+  // filter, and ask for a generic football scene. Used only after a 400 safety
+  // rejection. Always returns a usable on-topic prompt.
+  _safeFallbackPrompt(originalPrompt) {
+    let p = String(originalPrompt || '')
+      .replace(/\b[\w-]+'s\b/gi, '')                 // strip possessives ("Messi's")
+      .replace(/\b(magic|sensation|nightmare|iconic|unforgettable|epic|stunning|legendary|miracle)\b/gi, '')
+      .replace(/[:."]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    // Keep it short and generic; lead with a clearly-safe subject.
+    return `A dramatic professional football (soccer) stadium scene, players in action on the pitch, ` +
+      `cinematic lighting, crowd in the background. ${p ? 'Theme: ' + p + '.' : ''} ` +
+      `No text, no watermarks, no real identifiable faces.`;
   }
 
   enhanceVisualPrompt(prompt, style) {
@@ -324,12 +385,22 @@ class AIVideoGenerator {
     await fs.mkdir(tempDir, { recursive: true });
 
     if (validAssets.length === 0) {
-      this.logger.warn('No valid visual assets, generating placeholder video');
-      const safeTitle = (script.title || 'Video').replace(/'/g, "\\'").replace(/:/g, '\\:');
-      const cmd = `ffmpeg -y -f lavfi -i "color=c=0x1a1a2e:s=${W}x${H}:d=${duration}" ` +
-        `-vf "drawtext=text='${safeTitle}':fontsize=54:fontcolor=white:x=(w-text_w)/2:y=(h-text_h)/2:fontfile=/System/Library/Fonts/Helvetica.ttc" ` +
-        `-c:v libx264 -pix_fmt yuv420p "${videoPath}"`;
-      execSync(cmd, { stdio: 'pipe', timeout: 60000 });
+      // No usable imagery (e.g. image gen 429'd to placeholders). Build a real
+      // title-card video instead of failing. NOTE: this ffmpeg build has no
+      // libfreetype, so we render the title with sharp (SVG) and loop that still
+      // image — NEVER drawtext (which doesn't exist here and breaks on punctuation).
+      this.logger.warn('No valid visual assets, generating title-card video');
+      const card = await this._makePlaceholderCard(script.title || 'Video', tempDir, { width: W, height: H });
+      if (card) {
+        const cmd = `ffmpeg -y -loop 1 -i "${card}" -t ${duration} ` +
+          `-c:v libx264 -preset veryfast -pix_fmt yuv420p -r 30 -vf "scale=${W}:${H}" "${videoPath}"`;
+        execSync(cmd, { stdio: 'pipe', timeout: 120000 });
+      } else {
+        // sharp unavailable: plain solid-color clip (no text), still a valid mp4.
+        const cmd = `ffmpeg -y -f lavfi -i "color=c=0x1a1a2e:s=${W}x${H}:d=${duration}:r=30" ` +
+          `-c:v libx264 -preset veryfast -pix_fmt yuv420p "${videoPath}"`;
+        execSync(cmd, { stdio: 'pipe', timeout: 60000 });
+      }
     } else {
       // Calculate per-section durations from script
       const sectionDurations = this._getSectionDurations(script, duration, validAssets.length);
@@ -581,6 +652,62 @@ class AIVideoGenerator {
       return outPath;
     } catch (e) {
       this.logger.warn(`Text overlay failed for clip ${index}: ${e.message}`);
+      return null;
+    }
+  }
+
+  // Full-frame title card (dark gradient background + centered, word-wrapped
+  // title) rendered via sharp. Used as the placeholder-video frame when no real
+  // imagery is available. Returns a PNG path, or null if sharp is unavailable.
+  async _makePlaceholderCard(title, tempDir, dims = {}) {
+    if (!sharp) return null;
+    try {
+      const W = dims.width || 1920;
+      const H = dims.height || 1080;
+      const portrait = H > W;
+      const fontSize = portrait ? 72 : 64;
+      const maxChars = portrait ? 18 : 36;
+      const lineHeight = fontSize * 1.3;
+
+      const words = String(title || 'Video').split(/\s+/);
+      const lines = [];
+      let cur = '';
+      for (const w of words) {
+        if ((cur + ' ' + w).trim().length > maxChars && cur) { lines.push(cur); cur = w; }
+        else { cur = (cur + ' ' + w).trim(); }
+      }
+      if (cur) lines.push(cur);
+      const safeLines = lines.slice(0, 5).map(l => this._escapeXml(l));
+
+      const blockH = safeLines.length * lineHeight;
+      const firstBaseline = Math.round(H / 2 - blockH / 2 + fontSize);
+      const textEls = safeLines.map((line, i) => {
+        const y = firstBaseline + i * lineHeight;
+        return `<text x="${W / 2}" y="${y}" text-anchor="middle"
+            font-family="Arial Black, Helvetica, sans-serif" font-size="${fontSize}" font-weight="900"
+            fill="#FFFFFF">${line}</text>`;
+      }).join('');
+
+      const svg = Buffer.from(`
+        <svg width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0%" stop-color="#1a1a2e"/>
+              <stop offset="100%" stop-color="#0f1117"/>
+            </linearGradient>
+          </defs>
+          <rect width="${W}" height="${H}" fill="url(#bg)"/>
+          ${textEls}
+        </svg>`);
+
+      const outPath = path.join(tempDir, 'placeholder_card.png');
+      await sharp({ create: { width: W, height: H, channels: 4, background: { r: 26, g: 26, b: 46, alpha: 1 } } })
+        .composite([{ input: svg, top: 0, left: 0 }])
+        .png()
+        .toFile(outPath);
+      return outPath;
+    } catch (e) {
+      this.logger.warn(`Placeholder card render failed: ${e.message}`);
       return null;
     }
   }
@@ -921,13 +1048,13 @@ class AIVideoGenerator {
         'Quality: ultra-sharp, 4K, professional photography aesthetic, vibrant colors that pop on small screens.',
       ].join(' ');
       
-      const response = await this.openai.images.generate({
+      const response = await this._withRetry(() => this.openai.images.generate({
         model: "gpt-image-1",
         prompt: prompt,
         n: 1,
         size: "1536x1024",
         quality: "high"
-      });
+      }), { label: 'Thumbnail generation' });
       if (this.costMeter) {
         this.costMeter.recordImage('1536x1024', 'high', { label: 'Thumbnail' });
       }
