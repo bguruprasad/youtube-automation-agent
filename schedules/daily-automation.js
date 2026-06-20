@@ -8,79 +8,65 @@ class DailyAutomation {
     this.logger = new Logger('DailyAutomation');
     this.scheduledTasks = new Map();
     this.isEnabled = true;
+
+    // Static metadata for each task: cron expression (for display) + the method
+    // to invoke. Drives both setupScheduledTasks() and "run now". Keys must match
+    // the scheduledTasks Map keys.
+    this.taskMeta = {
+      'daily-content-generation': { cron: '0 6 * * *', label: 'Daily content generation', run: () => this.runDailyContentGeneration() },
+      'publish-queue-processing': { cron: '*/15 * * * *', label: 'Publish queue processing', run: () => this.processPublishQueue() },
+      'daily-analytics':          { cron: '0 9 * * *',  label: 'Daily analytics', run: () => this.collectDailyAnalytics() },
+      'weekly-strategy-review':   { cron: '0 8 * * 0',  label: 'Weekly strategy review', run: () => this.weeklyStrategyReview() },
+      'daily-optimization':       { cron: '0 22 * * *', label: 'Daily optimization', run: () => this.runDailyOptimization() },
+      'database-maintenance':     { cron: '0 3 * * 6',  label: 'Database maintenance', run: () => this.databaseMaintenance() },
+    };
+    // Last-run record per task: { at, status, detail }.
+    this.lastRun = {};
   }
 
   async initialize() {
     this.logger.info('Initializing daily automation scheduler...');
-    
+
+    // Automation is OFF by default for safety (scheduled generation can upload
+    // PUBLIC to the live channel). The dashboard toggle persists this setting.
+    const persisted = await this.db.getSetting('automation_enabled');
+    this.isEnabled = persisted === 'true'; // unset/null => disabled
+    this.logger.info(`Automation is ${this.isEnabled ? 'ENABLED' : 'DISABLED (default)'} on startup`);
+
     await this.setupScheduledTasks();
-    
+
     // Start monitoring loop
     this.startMonitoringLoop();
-    
+
     this.logger.success('Daily automation initialized successfully');
     return true;
   }
 
   async setupScheduledTasks() {
-    // Daily content generation at 6:00 AM
-    this.scheduledTasks.set('daily-content-generation', 
-      cron.schedule('0 6 * * *', async () => {
-        if (this.isEnabled) {
-          await this.runDailyContentGeneration();
+    // Build each cron job from taskMeta. The wrapper gates on isEnabled and
+    // records the run result in this.lastRun so the dashboard can show it.
+    for (const [name, meta] of Object.entries(this.taskMeta)) {
+      const job = cron.schedule(meta.cron, async () => {
+        if (!this.isEnabled) {
+          this.logger.info(`Skipping ${name} (automation disabled)`);
+          return;
         }
-      }, { scheduled: false })
-    );
-
-    // Publishing queue processing every 15 minutes
-    this.scheduledTasks.set('publish-queue-processing',
-      cron.schedule('*/15 * * * *', async () => {
-        if (this.isEnabled) {
-          await this.processPublishQueue();
+        this.lastRun[name] = { at: new Date().toISOString(), status: 'running', detail: 'scheduled' };
+        try {
+          await meta.run();
+          this.lastRun[name] = { at: new Date().toISOString(), status: 'success', detail: 'scheduled' };
+        } catch (error) {
+          this.lastRun[name] = { at: new Date().toISOString(), status: 'error', detail: error.message };
         }
-      }, { scheduled: false })
-    );
+      }, { scheduled: false });
+      this.scheduledTasks.set(name, job);
+    }
 
-    // Analytics collection at 9:00 AM daily
-    this.scheduledTasks.set('daily-analytics',
-      cron.schedule('0 9 * * *', async () => {
-        if (this.isEnabled) {
-          await this.collectDailyAnalytics();
-        }
-      }, { scheduled: false })
-    );
-
-    // Weekly strategy review on Sundays at 8:00 AM
-    this.scheduledTasks.set('weekly-strategy-review',
-      cron.schedule('0 8 * * 0', async () => {
-        if (this.isEnabled) {
-          await this.weeklyStrategyReview();
-        }
-      }, { scheduled: false })
-    );
-
-    // Optimization tasks daily at 10:00 PM
-    this.scheduledTasks.set('daily-optimization',
-      cron.schedule('0 22 * * *', async () => {
-        if (this.isEnabled) {
-          await this.runDailyOptimization();
-        }
-      }, { scheduled: false })
-    );
-
-    // Database maintenance weekly on Saturdays at 3:00 AM
-    this.scheduledTasks.set('database-maintenance',
-      cron.schedule('0 3 * * 6', async () => {
-        if (this.isEnabled) {
-          await this.databaseMaintenance();
-        }
-      }, { scheduled: false })
-    );
-
-    // Start all scheduled tasks
+    // Start all scheduled tasks (the timer runs; the isEnabled gate decides
+    // whether work actually happens, so the master toggle takes effect live).
     this.scheduledTasks.forEach((task, name) => {
       task.start();
-      this.logger.info(`Started scheduled task: ${name}`);
+      this.logger.info(`Started scheduled task: ${name} (${this.taskMeta[name].cron})`);
     });
   }
 
@@ -543,12 +529,31 @@ class DailyAutomation {
   // Control methods
   async pauseAutomation() {
     this.isEnabled = false;
+    await this.db.setSetting('automation_enabled', 'false', 'Master switch for scheduled automation');
     this.logger.info('Automation paused');
   }
 
   async resumeAutomation() {
     this.isEnabled = true;
+    await this.db.setSetting('automation_enabled', 'true', 'Master switch for scheduled automation');
     this.logger.info('Automation resumed');
+  }
+
+  // Run a single task immediately (dashboard "Run now"). Bypasses the isEnabled
+  // gate (it's an explicit manual action) but records the result like a cron run.
+  async runTaskNow(name) {
+    const meta = this.taskMeta[name];
+    if (!meta) throw new Error(`Unknown task: ${name}`);
+    this.logger.info(`Manually running task: ${name}`);
+    this.lastRun[name] = { at: new Date().toISOString(), status: 'running', detail: 'manual' };
+    try {
+      await meta.run();
+      this.lastRun[name] = { at: new Date().toISOString(), status: 'success', detail: 'manual' };
+      return this.lastRun[name];
+    } catch (error) {
+      this.lastRun[name] = { at: new Date().toISOString(), status: 'error', detail: error.message };
+      throw error;
+    }
   }
 
   async stopAutomation() {
@@ -568,13 +573,47 @@ class DailyAutomation {
   async getAutomationStatus() {
     return {
       enabled: this.isEnabled,
-      scheduledTasks: Array.from(this.scheduledTasks.keys()).map(name => ({
-        name,
-        running: this.scheduledTasks.get(name).running
-      })),
-      lastHealthCheck: this.lastHealthCheck,
-      uptime: process.uptime()
+      scheduledTasks: Array.from(this.scheduledTasks.keys()).map(name => {
+        const meta = this.taskMeta[name] || {};
+        return {
+          name,
+          label: meta.label || name,
+          cron: meta.cron || null,
+          nextRun: this._nextRun(meta.cron),
+          running: this.scheduledTasks.get(name).running,
+          lastRun: this.lastRun[name] || null,
+        };
+      }),
+      uptime: process.uptime(),
     };
+  }
+
+  // Compute the next fire time for a cron expression (display only). Supports the
+  // simple field forms used here: '*', '*/n', and a single number per field.
+  _nextRun(expr) {
+    if (!expr) return null;
+    const parts = expr.split(' ');
+    if (parts.length !== 5) return null;
+    const [mn, hr, dom, mon, dow] = parts;
+    const match = (field, value, max, min = 0) => {
+      if (field === '*') return true;
+      if (field.startsWith('*/')) return value % parseInt(field.slice(2)) === 0;
+      return parseInt(field) === value;
+    };
+    const d = new Date();
+    d.setSeconds(0, 0);
+    d.setMinutes(d.getMinutes() + 1);
+    // Scan forward up to ~366 days of minutes is too much; step by minute up to
+    // 8 days (enough for daily/weekly schedules), else give up.
+    for (let i = 0; i < 8 * 24 * 60; i++) {
+      if (
+        match(mn, d.getMinutes()) && match(hr, d.getHours()) &&
+        match(dom, d.getDate()) && match(mon, d.getMonth() + 1) &&
+        match(dow, d.getDay())
+      ) return d.toISOString();
+      d.setMinutes(d.getMinutes() + 1);
+    }
+    return null;
   }
 }
 

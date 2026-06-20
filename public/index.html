@@ -386,6 +386,19 @@
     .info-table th, .info-table td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); }
     .info-table th { color: var(--text-dim); font-weight: 600; }
     .info-note { font-size: 0.76rem; color: var(--text-dim); margin-top: 10px; line-height: 1.4; }
+
+    /* Automation / schedule */
+    .auto-toggle-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+    .auto-state { font-weight: 600; font-size: 0.95rem; }
+    .auto-state.on { color: var(--green); }
+    .auto-state.off { color: var(--text-dim); }
+    .run-badge {
+      display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 0.72rem;
+      font-weight: 600; text-transform: uppercase;
+    }
+    .run-badge.success { background: rgba(52,211,153,0.15); color: var(--green); }
+    .run-badge.error   { background: rgba(248,113,113,0.15); color: var(--red); }
+    .run-badge.running { background: rgba(251,191,36,0.15); color: var(--yellow); }
   </style>
 </head>
 <body>
@@ -402,6 +415,7 @@
     <div class="tabs">
       <button class="tab active" data-tab="long" onclick="switchTab('long')">🎬 Long Videos</button>
       <button class="tab" data-tab="shorts" onclick="switchTab('shorts')">📱 Shorts</button>
+      <button class="tab" data-tab="schedule" onclick="switchTab('schedule')">⚙️ Schedule</button>
     </div>
 
     <!-- ===== LONG VIDEOS TAB ===== -->
@@ -469,6 +483,29 @@
       </div>
     </div>
     </div><!-- /tab-shorts -->
+
+    <!-- ===== SCHEDULE TAB ===== -->
+    <div class="tab-panel" id="tab-schedule" style="display:none;">
+    <div class="section">
+      <div class="section-title" style="justify-content:space-between;">
+        <span>⚙️ Automation</span>
+        <button class="btn btn-sm btn-outline" onclick="loadAutomation()">Refresh</button>
+      </div>
+      <div id="automation-master" class="automation-master">
+        <div class="empty-state">Loading automation status…</div>
+      </div>
+      <p class="info-note" style="margin-top:6px;">
+        Automation is <strong>off by default</strong> for safety — scheduled content generation can
+        upload <strong>publicly</strong> to the live channel. Turn it on only when you want unattended runs.
+      </p>
+    </div>
+    <div class="section">
+      <div class="section-title">📋 Scheduled Tasks</div>
+      <div id="automation-tasks">
+        <div class="empty-state">Loading tasks…</div>
+      </div>
+    </div>
+    </div><!-- /tab-schedule -->
   </div>
 
   <!-- Info modal: generation details & cost -->
@@ -1057,12 +1094,105 @@
       document.getElementById('info-modal').style.display = 'none';
     }
 
+    // --- Automation / Schedule ---
+    const CRON_LABELS = {
+      '0 6 * * *': 'Daily at 6:00 AM',
+      '*/15 * * * *': 'Every 15 minutes',
+      '0 9 * * *': 'Daily at 9:00 AM',
+      '0 8 * * 0': 'Sundays at 8:00 AM',
+      '0 22 * * *': 'Daily at 10:00 PM',
+      '0 3 * * 6': 'Saturdays at 3:00 AM',
+    };
+    function cronHuman(c) { return CRON_LABELS[c] || c || '—'; }
+    function fmtDateTime(s) { return s ? new Date(s).toLocaleString() : '—'; }
+
+    async function loadAutomation() {
+      const master = document.getElementById('automation-master');
+      const tasksEl = document.getElementById('automation-tasks');
+      try {
+        const res = await fetch('/automation');
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || 'Failed');
+        const st = data.status;
+
+        master.innerHTML = `
+          <div class="auto-toggle-row">
+            <span class="auto-state ${st.enabled ? 'on' : 'off'}">${st.enabled ? '🟢 Automation ON' : '⚪ Automation OFF'}</span>
+            <button class="btn btn-sm ${st.enabled ? 'btn-upload' : 'btn-green'}" id="auto-toggle-btn" onclick="toggleAutomation(${!st.enabled})">
+              ${st.enabled ? 'Pause automation' : 'Enable automation'}
+            </button>
+            <span style="color:var(--text-dim);font-size:0.8rem;">uptime ${Math.floor((st.uptime||0)/60)} min</span>
+          </div>`;
+
+        tasksEl.innerHTML = '<div class="outputs-list">' + (st.scheduledTasks || []).map(t => {
+          const lr = t.lastRun;
+          const lrBadge = lr
+            ? `<span class="run-badge ${lr.status}">${lr.status}</span> <span style="color:var(--text-dim)">${fmtDateTime(lr.at)}${lr.detail && lr.detail!=='scheduled' && lr.detail!=='manual' ? ' · '+escHtml(lr.detail) : ''}</span>`
+            : '<span style="color:var(--text-dim)">never run this session</span>';
+          return `
+            <div class="output-item">
+              <div class="output-info">
+                <h4>${escHtml(t.label || t.name)}</h4>
+                <div class="folder-name">${cronHuman(t.cron)} · next: ${fmtDateTime(t.nextRun)}</div>
+                <div style="font-size:0.8rem;margin-top:4px;">Last: ${lrBadge}</div>
+              </div>
+              <div class="output-actions">
+                <button class="btn btn-sm btn-outline" data-task="${escHtml(t.name)}" onclick="runTaskNow(this)">▶ Run now</button>
+                <span class="run-now-status" data-task="${escHtml(t.name)}" style="font-size:0.8rem;"></span>
+              </div>
+            </div>`;
+        }).join('') + '</div>';
+      } catch (err) {
+        master.innerHTML = `<div class="empty-state" style="color:var(--red)">Failed to load: ${escHtml(err.message)}</div>`;
+        tasksEl.innerHTML = '';
+      }
+    }
+
+    async function toggleAutomation(enable) {
+      const btn = document.getElementById('auto-toggle-btn');
+      if (enable && !confirm('Enable automation? Scheduled jobs (incl. content generation that can upload PUBLICLY) will run unattended.')) return;
+      if (btn) { btn.disabled = true; btn.textContent = '…'; }
+      try {
+        const res = await fetch('/automation/toggle', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled: enable })
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || 'Failed');
+        loadAutomation();
+      } catch (err) {
+        alert('Toggle failed: ' + err.message);
+        loadAutomation();
+      }
+    }
+
+    async function runTaskNow(btn) {
+      const task = btn.getAttribute('data-task');
+      const statusEl = document.querySelector(`.run-now-status[data-task="${CSS.escape(task)}"]`);
+      if (!confirm(`Run "${task}" now?`)) return;
+      btn.disabled = true; const original = btn.textContent; btn.textContent = '⏳ Running…';
+      if (statusEl) { statusEl.style.color = ''; statusEl.textContent = ''; }
+      try {
+        const res = await fetch('/automation/run/' + encodeURIComponent(task), { method: 'POST' });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || 'Failed');
+        if (statusEl) { statusEl.style.color = 'var(--green,#3fb950)'; statusEl.textContent = '✅ done'; }
+        setTimeout(loadAutomation, 800);
+      } catch (err) {
+        if (statusEl) { statusEl.style.color = 'var(--red,#f85149)'; statusEl.textContent = '❌ ' + err.message; }
+      } finally {
+        btn.disabled = false; btn.textContent = original;
+      }
+    }
+
     // --- Init ---
     function switchTab(name) {
       document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
       document.getElementById('tab-long').style.display = name === 'long' ? '' : 'none';
       document.getElementById('tab-shorts').style.display = name === 'shorts' ? '' : 'none';
+      document.getElementById('tab-schedule').style.display = name === 'schedule' ? '' : 'none';
       if (name === 'shorts') loadShorts();
+      if (name === 'schedule') loadAutomation();
     }
 
     checkHealth();

@@ -203,6 +203,42 @@ class YouTubeAutomationAgent {
       }
     });
 
+    // Automation scheduler: status, master toggle, and run-a-task-now.
+    this.app.get('/automation', async (req, res) => {
+      try {
+        if (!this.scheduler) return res.json({ success: false, error: 'Scheduler not initialized' });
+        res.json({ success: true, status: await this.scheduler.getAutomationStatus() });
+      } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+      }
+    });
+
+    // Body: { enabled: true|false }. Persists the master switch.
+    this.app.post('/automation/toggle', async (req, res) => {
+      try {
+        if (!this.scheduler) throw new Error('Scheduler not initialized');
+        const enabled = !!(req.body && req.body.enabled);
+        if (enabled) await this.scheduler.resumeAutomation();
+        else await this.scheduler.pauseAutomation();
+        res.json({ success: true, enabled, status: await this.scheduler.getAutomationStatus() });
+      } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+      }
+    });
+
+    // Run one scheduled task immediately (manual trigger). Long tasks (content
+    // generation) can take minutes; the request waits for completion.
+    this.app.post('/automation/run/:task', async (req, res) => {
+      try {
+        if (!this.scheduler) throw new Error('Scheduler not initialized');
+        const result = await this.scheduler.runTaskNow(req.params.task);
+        res.json({ success: true, result });
+      } catch (error) {
+        this.logger.error(`Manual task run failed (${req.params.task}):`, error);
+        res.status(500).json({ success: false, error: error.message });
+      }
+    });
+
     // Manual publish
     this.app.post('/publish/:contentId', async (req, res) => {
       try {
@@ -470,7 +506,8 @@ class YouTubeAutomationAgent {
       console.log(chalk.white('📅 Schedule: ') + chalk.cyan(`http://localhost:${PORT}/schedule`));
       console.log(chalk.white('📈 Analytics: ') + chalk.cyan(`http://localhost:${PORT}/analytics`));
       console.log(chalk.gray('─'.repeat(50)));
-      console.log(chalk.yellow('\n🤖 Automation is active. Content will be generated and posted daily.'));
+      const autoOn = this.scheduler && this.scheduler.isEnabled;
+      console.log(chalk.yellow(`\n🤖 Automation is ${autoOn ? 'ENABLED — scheduled jobs will run' : 'DISABLED by default — enable it from the Schedule tab'}.`));
     });
   }
 }

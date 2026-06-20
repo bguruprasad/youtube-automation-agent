@@ -118,7 +118,8 @@ When you need to understand the docs or project content:
 ### Known Bugs / Risks
 - `Content saved with ID: undefined` — DB insert returns undefined ID.
 - gpt-image-1 image failures now handled in `generateVisualAssets` (`utils/ai-video-generator.js`): `_withRetry()` does exponential backoff on 429/5xx; a `400` "rejected by the safety system" triggers ONE retry with `_safeFallbackPrompt()` (strips possessives/hype words → generic football scene). Real-person + stylized titles (e.g. "Messi's Magic: The Solo Sensation") were tripping safety → silent placeholder; now they recover. If images still can't be made, `generateSlideshowVideo` builds a **title-card video** via sharp (NOT drawtext) instead of writing a `video.mp4.info` stub — so a run always yields a playable mp4.
-- Daily cron runs but full daily automation hasn't been end-to-end verified.
+- Daily cron runs but full daily *content-generation* automation hasn't been end-to-end verified.
+- **Automation is now OFF by default** (persisted DB setting `automation_enabled`, unset=disabled). The cron timers always start, but a `this.isEnabled` gate blocks the work until enabled. Managed from the dashboard **Schedule tab** (`GET /automation`, `POST /automation/toggle {enabled}`, `POST /automation/run/:task` to run one task now). Task metadata (cron + label + runner) lives in `DailyAutomation.taskMeta`; `getAutomationStatus()` returns per-task cron/nextRun/lastRun. Enabling it lets the 6 AM job generate AND publish (PUBLIC) unattended — warn before enabling.
 - YouTube publishing OAuth not configured; `publishing-scheduling-agent.js` untested with real creds.
 
 ### Top Priorities
