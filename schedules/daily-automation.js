@@ -23,6 +23,8 @@ class DailyAutomation {
     };
     // Last-run record per task: { at, status, detail }.
     this.lastRun = {};
+    // Names of individually-disabled tasks (loaded from DB in initialize()).
+    this.disabledTasks = new Set();
   }
 
   async initialize() {
@@ -33,6 +35,17 @@ class DailyAutomation {
     const persisted = await this.db.getSetting('automation_enabled');
     this.isEnabled = persisted === 'true'; // unset/null => disabled
     this.logger.info(`Automation is ${this.isEnabled ? 'ENABLED' : 'DISABLED (default)'} on startup`);
+
+    // Per-task disable set (persisted as a JSON array in setting
+    // `disabled_tasks`). A task is skipped by cron if it's in here, even when the
+    // master switch is ON. Tasks not listed default to enabled.
+    try {
+      const raw = await this.db.getSetting('disabled_tasks');
+      this.disabledTasks = new Set(raw ? JSON.parse(raw) : []);
+    } catch { this.disabledTasks = new Set(); }
+    if (this.disabledTasks.size) {
+      this.logger.info(`Disabled tasks: ${Array.from(this.disabledTasks).join(', ')}`);
+    }
 
     await this.setupScheduledTasks();
 
@@ -50,6 +63,10 @@ class DailyAutomation {
       const job = cron.schedule(meta.cron, async () => {
         if (!this.isEnabled) {
           this.logger.info(`Skipping ${name} (automation disabled)`);
+          return;
+        }
+        if (this.disabledTasks.has(name)) {
+          this.logger.info(`Skipping ${name} (task disabled)`);
           return;
         }
         this.lastRun[name] = { at: new Date().toISOString(), status: 'running', detail: 'scheduled' };
@@ -585,6 +602,18 @@ class DailyAutomation {
     this.logger.info('Automation resumed');
   }
 
+  // Enable/disable a single task (persisted). Does not affect the master switch
+  // or "run now" — only whether cron auto-runs this task.
+  async setTaskEnabled(name, enabled) {
+    if (!this.taskMeta[name]) throw new Error(`Unknown task: ${name}`);
+    if (enabled) this.disabledTasks.delete(name);
+    else this.disabledTasks.add(name);
+    await this.db.setSetting('disabled_tasks', JSON.stringify(Array.from(this.disabledTasks)),
+      'Per-task automation disable list (task names)');
+    this.logger.info(`Task ${name} ${enabled ? 'enabled' : 'disabled'}`);
+    return { name, enabled };
+  }
+
   // Run a single task immediately (dashboard "Run now"). Bypasses the isEnabled
   // gate (it's an explicit manual action) but records the result like a cron run.
   async runTaskNow(name) {
@@ -627,6 +656,7 @@ class DailyAutomation {
           cron: meta.cron || null,
           nextRun: this._nextRun(meta.cron),
           running: this.scheduledTasks.get(name).running,
+          taskEnabled: !this.disabledTasks.has(name),
           lastRun: this.lastRun[name] || null,
         };
       }),

@@ -1183,14 +1183,18 @@
           const lrBadge = lr
             ? `<span class="run-badge ${lr.status}">${lr.status}</span> <span style="color:var(--text-dim)">${fmtDateTime(lr.at)}${lr.detail && lr.detail!=='scheduled' && lr.detail!=='manual' ? ' · '+escHtml(lr.detail) : ''}</span>`
             : '<span style="color:var(--text-dim)">never run this session</span>';
+          const taskOn = t.taskEnabled !== false;
           return `
-            <div class="output-item">
+            <div class="output-item" style="${taskOn ? '' : 'opacity:0.6;'}">
               <div class="output-info">
-                <h4>${escHtml(t.label || t.name)}</h4>
-                <div class="folder-name">${cronHuman(t.cron)} · next: ${fmtDateTime(t.nextRun)}</div>
+                <h4>${escHtml(t.label || t.name)} ${taskOn ? '' : '<span class="run-badge error">disabled</span>'}</h4>
+                <div class="folder-name">${cronHuman(t.cron)} · next: ${taskOn ? fmtDateTime(t.nextRun) : '—'}</div>
                 <div style="font-size:0.8rem;margin-top:4px;">Last: ${lrBadge}</div>
               </div>
               <div class="output-actions">
+                <button class="btn btn-sm ${taskOn ? 'btn-outline' : 'btn-green'}" data-task="${escHtml(t.name)}" onclick="toggleTask(this, ${!taskOn})">
+                  ${taskOn ? 'Disable' : 'Enable'}
+                </button>
                 <button class="btn btn-sm btn-outline" data-task="${escHtml(t.name)}" onclick="runTaskNow(this)">▶ Run now</button>
                 <span class="run-now-status" data-task="${escHtml(t.name)}" style="font-size:0.8rem;"></span>
               </div>
@@ -1235,6 +1239,23 @@
         if (statusEl) { statusEl.style.color = 'var(--green,#3fb950)'; statusEl.textContent = '✅ saved'; }
       } catch (err) {
         if (statusEl) { statusEl.style.color = 'var(--red,#f85149)'; statusEl.textContent = '❌ ' + err.message; }
+      }
+    }
+
+    async function toggleTask(btn, enable) {
+      const task = btn.getAttribute('data-task');
+      btn.disabled = true;
+      try {
+        const res = await fetch('/automation/task/' + encodeURIComponent(task) + '/toggle', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled: enable })
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || 'Failed');
+        loadAutomation();
+      } catch (err) {
+        alert('Task toggle failed: ' + err.message);
+        btn.disabled = false;
       }
     }
 

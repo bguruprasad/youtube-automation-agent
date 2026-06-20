@@ -276,6 +276,18 @@ class YouTubeAutomationAgent {
       }
     });
 
+    // Enable/disable a single task. Body: { enabled: true|false }.
+    this.app.post('/automation/task/:task/toggle', async (req, res) => {
+      try {
+        if (!this.scheduler) throw new Error('Scheduler not initialized');
+        const enabled = !!(req.body && req.body.enabled);
+        const result = await this.scheduler.setTaskEnabled(req.params.task, enabled);
+        res.json({ success: true, ...result });
+      } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+      }
+    });
+
     // Run one scheduled task immediately (manual trigger). Long tasks (content
     // generation) can take minutes; the request waits for completion.
     this.app.post('/automation/run/:task', async (req, res) => {
