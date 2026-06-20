@@ -1140,6 +1140,7 @@
     // --- Automation / Schedule ---
     const CRON_LABELS = {
       '0 6 * * *': 'Daily at 6:00 AM',
+      '0 7 * * *': 'Daily at 7:00 AM',
       '*/15 * * * *': 'Every 15 minutes',
       '0 9 * * *': 'Daily at 9:00 AM',
       '0 8 * * 0': 'Sundays at 8:00 AM',
@@ -1158,6 +1159,9 @@
         if (!data.success) throw new Error(data.error || 'Failed');
         const st = data.status;
 
+        let shortsCount = 1;
+        try { const sc = await (await fetch('/automation/shorts-count')).json(); if (sc.success) shortsCount = sc.count; } catch {}
+
         master.innerHTML = `
           <div class="auto-toggle-row">
             <span class="auto-state ${st.enabled ? 'on' : 'off'}">${st.enabled ? '🟢 Automation ON' : '⚪ Automation OFF'}</span>
@@ -1165,6 +1169,13 @@
               ${st.enabled ? 'Pause automation' : 'Enable automation'}
             </button>
             <span style="color:var(--text-dim);font-size:0.8rem;">uptime ${Math.floor((st.uptime||0)/60)} min</span>
+          </div>
+          <div class="auto-toggle-row" style="margin-top:12px;">
+            <label style="font-size:0.85rem;">Daily Shorts to generate:</label>
+            <input type="number" id="shorts-count-input" min="0" max="10" value="${shortsCount}"
+              style="width:64px;padding:6px;border-radius:4px;background:var(--surface-2);color:var(--text);border:1px solid var(--border);" />
+            <button class="btn btn-sm btn-outline" onclick="saveShortsCount()">Save</button>
+            <span id="shorts-count-status" style="font-size:0.8rem;"></span>
           </div>`;
 
         tasksEl.innerHTML = '<div class="outputs-list">' + (st.scheduledTasks || []).map(t => {
@@ -1206,6 +1217,24 @@
       } catch (err) {
         alert('Toggle failed: ' + err.message);
         loadAutomation();
+      }
+    }
+
+    async function saveShortsCount() {
+      const input = document.getElementById('shorts-count-input');
+      const statusEl = document.getElementById('shorts-count-status');
+      const count = parseInt(input.value);
+      try {
+        const res = await fetch('/automation/shorts-count', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ count })
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || 'Failed');
+        input.value = data.count;
+        if (statusEl) { statusEl.style.color = 'var(--green,#3fb950)'; statusEl.textContent = '✅ saved'; }
+      } catch (err) {
+        if (statusEl) { statusEl.style.color = 'var(--red,#f85149)'; statusEl.textContent = '❌ ' + err.message; }
       }
     }
 

@@ -13,7 +13,8 @@ class DailyAutomation {
     // to invoke. Drives both setupScheduledTasks() and "run now". Keys must match
     // the scheduledTasks Map keys.
     this.taskMeta = {
-      'daily-content-generation': { cron: '0 6 * * *', label: 'Daily content generation', run: () => this.runDailyContentGeneration() },
+      'daily-content-generation': { cron: '0 6 * * *', label: 'Daily content generation (long video)', run: () => this.runDailyContentGeneration() },
+      'daily-shorts-generation': { cron: '0 7 * * *', label: 'Daily Shorts generation', run: () => this.runDailyShortsGeneration() },
       'publish-queue-processing': { cron: '*/15 * * * *', label: 'Publish queue processing', run: () => this.processPublishQueue() },
       'daily-analytics':          { cron: '0 9 * * *',  label: 'Daily analytics', run: () => this.collectDailyAnalytics() },
       'weekly-strategy-review':   { cron: '0 8 * * 0',  label: 'Weekly strategy review', run: () => this.weeklyStrategyReview() },
@@ -132,6 +133,56 @@ class DailyAutomation {
 
       // Send notification about failure
       await this.sendFailureNotification('Daily Content Generation', error);
+    }
+  }
+
+  // Generate N football Shorts (count from the `daily_shorts_count` DB setting,
+  // default 1). Mirrors the /generate-short flow: moment -> short script ->
+  // portrait images -> vertical assembly. Does NOT upload (publishing stays
+  // manual / via the publish queue). Each Short is metered for cost.
+  async runDailyShortsGeneration() {
+    try {
+      const count = parseInt(await this.db.getSetting('daily_shorts_count')) || 1;
+      this.logger.info(`Starting daily Shorts generation (count=${count})...`);
+
+      const shortsConfig = require('../utils/shorts-config');
+      const momentsProvider = require('../utils/football-moments-provider');
+      const { CostMeter } = require('../utils/cost-meter');
+      const { ShortsProducer } = require('../utils/shorts-producer');
+      const producer = new ShortsProducer(this.agents.production.aiVideoGenerator, this.logger);
+
+      const made = [];
+      for (let n = 0; n < count; n++) {
+        try {
+          const moment = await momentsProvider.getMoment({ logger: this.logger });
+          this.logger.info(`Daily Short ${n + 1}/${count}: ${moment.title}`);
+          const script = await this.agents.scriptWriter.generateShortScript(moment);
+
+          // Fresh meter per Short so each script.json gets its own cost.
+          this.agents.production.aiVideoGenerator.costMeter = new CostMeter();
+
+          const images = [];
+          const visualPrompt = `${moment.title}. ${moment.hint || ''} Football/soccer, dramatic, cinematic.`;
+          for (let i = 0; i < shortsConfig.imageCount; i++) {
+            const assets = await this.agents.production.aiVideoGenerator.generateVisualAssets(
+              visualPrompt, 'cinematic', 1,
+              { size: shortsConfig.imageSize, quality: shortsConfig.imageQuality }
+            );
+            images.push(...assets);
+          }
+
+          const result = await producer.produce(script, images);
+          made.push({ folder: result.folder, title: script.title });
+        } catch (e) {
+          this.logger.error(`Daily Short ${n + 1} failed: ${e.message}`);
+        }
+      }
+
+      this.logger.success(`Daily Shorts generation completed: ${made.length}/${count} created`);
+      await this.logAutomationEvent('daily_shorts_generation', 'success', { created: made.length, requested: count, shorts: made });
+    } catch (error) {
+      this.logger.error('Daily Shorts generation failed:', error);
+      await this.logAutomationEvent('daily_shorts_generation', 'error', { error: error.message });
     }
   }
 

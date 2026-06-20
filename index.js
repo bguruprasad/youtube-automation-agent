@@ -255,6 +255,27 @@ class YouTubeAutomationAgent {
       }
     });
 
+    // Get/set the number of Shorts the daily Shorts task generates.
+    this.app.get('/automation/shorts-count', async (req, res) => {
+      try {
+        const count = parseInt(await this.db.getSetting('daily_shorts_count')) || 1;
+        res.json({ success: true, count });
+      } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+      }
+    });
+    this.app.post('/automation/shorts-count', async (req, res) => {
+      try {
+        let count = parseInt(req.body && req.body.count);
+        if (!Number.isFinite(count) || count < 0) throw new Error('count must be a non-negative integer');
+        count = Math.min(count, 10); // sane upper bound (cost guard)
+        await this.db.setSetting('daily_shorts_count', String(count), 'How many Shorts the daily Shorts task generates');
+        res.json({ success: true, count });
+      } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+      }
+    });
+
     // Run one scheduled task immediately (manual trigger). Long tasks (content
     // generation) can take minutes; the request waits for completion.
     this.app.post('/automation/run/:task', async (req, res) => {
