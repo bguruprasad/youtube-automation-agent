@@ -274,6 +274,7 @@ class PublishingSchedulingAgent {
       }
     };
     
+    this.logger.info(`Uploading with privacyStatus=${videoMetadata.status.privacyStatus} (override=${scheduleEntry._privacyOverride || 'none'}, envDefault=${process.env.DEFAULT_PRIVACY_STATUS || 'none'})`);
     // Upload video file
     const videoUpload = await this.youtube.videos.insert({
       part: 'snippet,status',
