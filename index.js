@@ -204,6 +204,16 @@ class YouTubeAutomationAgent {
       }
     });
 
+    // Monetization progress vs YouTube Partner Program thresholds.
+    this.app.get('/analytics/monetization', async (req, res) => {
+      try {
+        const status = await this.agents.analytics.getMonetizationStatus();
+        res.json({ success: true, status });
+      } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+      }
+    });
+
     // Strategy review: last persisted report (fast) or generate a fresh one.
     this.app.get('/strategy-review', async (req, res) => {
       try {

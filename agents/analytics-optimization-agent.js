@@ -666,6 +666,74 @@ class AnalyticsOptimizationAgent {
     return total > 0 ? ((mobile / total) * 100).toFixed(1) : '0';
   }
 
+  // Monetization progress vs YouTube Partner Program thresholds.
+  //   Standard YPP: 1,000 subs AND (4,000 public watch-hours/12mo OR
+  //                 10,000,000 public Shorts views/90 days).
+  // Pulls: subscriber count (Data API), last-365-day watch minutes and
+  // last-90-day Shorts views (Analytics API). Each metric degrades to null if
+  // its API call fails, so the widget still shows what it can. Thresholds are
+  // YouTube's published values (verify on YouTube's YPP page; they change).
+  async getMonetizationStatus() {
+    const THRESHOLDS = { subscribers: 1000, watchHours: 4000, shortsViews: 10000000 };
+    const out = {
+      thresholds: THRESHOLDS,
+      subscribers: null, watchHours: null, shortsViews: null,
+      apiAvailable: !!this.youtube, note: null, checkedAt: new Date().toISOString(),
+    };
+    if (!this.youtube) { out.note = 'YouTube API not configured.'; return out; }
+
+    // Subscribers + lifetime totals (Data API).
+    try {
+      const resp = await this.youtube.channels.list({ part: 'statistics', mine: true });
+      const s = resp.data.items?.[0]?.statistics || {};
+      out.subscribers = parseInt(s.subscriberCount) || 0;
+      out.lifetimeViews = parseInt(s.viewCount) || 0;
+    } catch (e) { this.logger.warn(`channels.list failed: ${e.message}`); }
+
+    const fmt = (d) => d.toISOString().slice(0, 10);
+    const today = new Date();
+
+    // Watch hours — last 365 days (Analytics API, channel-wide).
+    if (this.youtubeAnalytics) {
+      try {
+        const from = new Date(today.getTime() - 365 * 864e5);
+        const r = await this.youtubeAnalytics.reports.query({
+          ids: 'channel==MINE', startDate: fmt(from), endDate: fmt(today),
+          metrics: 'estimatedMinutesWatched',
+        });
+        const minutes = r.data.rows?.[0]?.[0] || 0;
+        out.watchHours = Math.round(minutes / 60);
+      } catch (e) { this.logger.warn(`watch-hours query failed: ${e.message}`); }
+
+      // Shorts views — last 90 days. The Analytics API can't cleanly isolate
+      // Shorts channel-wide, so we approximate using our tracked Short uploads'
+      // total recent views (close enough for a progress indicator).
+      try {
+        const report = await this.getUploadedVideosReport();
+        const shortsViews = report.videos
+          .filter((v) => v.kind === 'short' && v.stats)
+          .reduce((sum, v) => sum + (v.stats.views || 0), 0);
+        out.shortsViews = shortsViews;
+        out.shortsViewsApprox = true; // flag: lifetime tracked-Shorts views, not strictly 90-day
+      } catch (e) { this.logger.warn(`shorts-views estimate failed: ${e.message}`); }
+    } else {
+      out.note = 'Analytics API not available — watch-hours/Shorts-views need youtube.readonly + Analytics scope.';
+    }
+
+    // Compute progress + eligibility.
+    const pct = (val, max) => (val == null ? null : Math.min(100, Math.round((val / max) * 100)));
+    out.progress = {
+      subscribers: pct(out.subscribers, THRESHOLDS.subscribers),
+      watchHours: pct(out.watchHours, THRESHOLDS.watchHours),
+      shortsViews: pct(out.shortsViews, THRESHOLDS.shortsViews),
+    };
+    const subsOk = (out.subscribers || 0) >= THRESHOLDS.subscribers;
+    const watchOk = (out.watchHours || 0) >= THRESHOLDS.watchHours;
+    const shortsOk = (out.shortsViews || 0) >= THRESHOLDS.shortsViews;
+    out.eligible = subsOk && (watchOk || shortsOk);
+    return out;
+  }
+
   // On-demand report for videos actually uploaded via the dashboard. Uploads
   // are tracked as youtube_upload.json markers in each output folder (NOT in the
   // publish_schedule table), so we read those markers, batch-fetch current live

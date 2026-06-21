@@ -415,6 +415,17 @@
     .strategy-list { margin: 0 0 0 18px; font-size: 0.88rem; }
     .strategy-list li { margin-bottom: 6px; line-height: 1.45; }
     .strategy-list.recs li { color: var(--text); }
+    /* Monetization */
+    .monet-banner { font-size: 0.85rem; color: var(--text-dim); background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; margin-bottom: 14px; }
+    .monet-banner.eligible { color: var(--green); border-color: var(--green); }
+    .monet-row { margin-bottom: 14px; }
+    .monet-head { display: flex; justify-content: space-between; font-size: 0.86rem; margin-bottom: 5px; }
+    .monet-val { color: var(--text-dim); font-variant-numeric: tabular-nums; }
+    .monet-bar { height: 8px; background: var(--surface-2); border-radius: 5px; overflow: hidden; }
+    .monet-fill { height: 100%; background: var(--accent); border-radius: 5px; transition: width 0.4s; }
+    .monet-fill.done { background: var(--green); }
+    .monet-note { font-size: 0.74rem; color: var(--text-dim); margin-top: 4px; }
+    .monet-or { text-align: center; font-size: 0.78rem; color: var(--text-dim); margin: 4px 0 10px; }
   </style>
 </head>
 <body>
@@ -526,6 +537,15 @@
 
     <!-- ===== ANALYTICS TAB ===== -->
     <div class="tab-panel" id="tab-analytics" style="display:none;">
+    <div class="section">
+      <div class="section-title" style="justify-content:space-between;">
+        <span>💰 Monetization Progress</span>
+        <button class="btn btn-sm btn-outline" onclick="loadMonetization()">Refresh</button>
+      </div>
+      <div id="monetization-body">
+        <div class="empty-state">Loading…</div>
+      </div>
+    </div>
     <div class="section">
       <div class="section-title" style="justify-content:space-between;">
         <span>📊 Video Performance</span>
@@ -1278,6 +1298,55 @@
       }
     }
 
+    // --- Monetization ---
+    function monetRow(label, val, max, opts = {}) {
+      const has = val != null;
+      const pct = has ? Math.min(100, (val / max) * 100) : 0;
+      const done = has && val >= max;
+      const valStr = has ? fmtNum(val) : (opts.unavailable || '—');
+      return `
+        <div class="monet-row">
+          <div class="monet-head">
+            <span>${label} ${done ? '✅' : ''}</span>
+            <span class="monet-val">${valStr} / ${fmtNum(max)}${opts.suffix||''}</span>
+          </div>
+          <div class="monet-bar"><div class="monet-fill ${done?'done':''}" style="width:${pct}%"></div></div>
+          ${opts.note ? `<div class="monet-note">${escHtml(opts.note)}</div>` : ''}
+        </div>`;
+    }
+
+    async function loadMonetization() {
+      const body = document.getElementById('monetization-body');
+      body.innerHTML = '<div class="spinner-wrap" style="margin-top:8px"><div class="spinner"></div><span>Checking eligibility…</span></div>';
+      try {
+        const res = await fetch('/analytics/monetization');
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || 'Failed');
+        const s = data.status;
+        if (!s.apiAvailable) {
+          body.innerHTML = '<div class="empty-state">YouTube API not configured — can\'t check monetization.</div>';
+          return;
+        }
+        const t = s.thresholds;
+        const eligibleBanner = s.eligible
+          ? '<div class="monet-banner eligible">🎉 You meet the YouTube Partner Program thresholds!</div>'
+          : '<div class="monet-banner">Need: 1,000 subscribers AND (4,000 watch-hours/12mo OR 10M Shorts views/90 days)</div>';
+        body.innerHTML = eligibleBanner +
+          monetRow('👥 Subscribers', s.subscribers, t.subscribers) +
+          '<div class="monet-or">— then either —</div>' +
+          monetRow('⏱ Watch hours (12 mo)', s.watchHours, t.watchHours, {
+            unavailable: 'unavailable',
+            note: s.watchHours == null ? 'Enable the YouTube Analytics API in Google Cloud Console to track this.' : null
+          }) +
+          monetRow('📱 Shorts views', s.shortsViews, t.shortsViews, {
+            note: s.shortsViewsApprox ? 'Approx: total views of your tracked Shorts (YouTube measures last-90-day public Shorts views).' : null
+          }) +
+          `<p class="info-note">Thresholds are YouTube\'s published values and can change — confirm on YouTube\'s Partner Program page.</p>`;
+      } catch (err) {
+        body.innerHTML = `<div class="empty-state" style="color:var(--red)">Failed: ${escHtml(err.message)}</div>`;
+      }
+    }
+
     // --- Video Analytics ---
     function fmtNum(n) { return (n == null) ? '—' : Number(n).toLocaleString(); }
 
@@ -1375,7 +1444,7 @@
       document.getElementById('tab-analytics').style.display = name === 'analytics' ? '' : 'none';
       if (name === 'shorts') loadShorts();
       if (name === 'schedule') loadAutomation();
-      if (name === 'analytics') loadVideoAnalytics();
+      if (name === 'analytics') { loadMonetization(); loadVideoAnalytics(); }
     }
 
     checkHealth();
