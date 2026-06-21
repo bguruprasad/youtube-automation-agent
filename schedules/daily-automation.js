@@ -16,7 +16,7 @@ class DailyAutomation {
     this.taskMeta = {
       'daily-content-generation': { cron: '0 6 * * *', label: 'Daily content generation (long video)', run: () => this.runDailyContentGeneration() },
       'daily-shorts-generation': { cron: '0 7 * * *', label: 'Daily Shorts generation', run: () => this.runDailyShortsGeneration() },
-      'worldcup-match-videos': { cron: '0 8 * * *', label: 'World Cup match videos (recap + Short, auto-upload unlisted)', run: () => this.runWorldCupMatchVideos() },
+      'worldcup-match-videos': { cron: '*/30 * * * *', label: 'World Cup match videos (polls every 30 min; recap + Short ~30 min after full-time, auto-upload unlisted)', run: () => this.runWorldCupMatchVideos() },
       'publish-queue-processing': { cron: '*/15 * * * *', label: 'Publish queue processing', run: () => this.processPublishQueue() },
       'daily-analytics':          { cron: '0 9 * * *',  label: 'Daily analytics', run: () => this.collectDailyAnalytics() },
       'weekly-strategy-review':   { cron: '0 8 * * 0',  label: 'Weekly strategy review', run: () => this.weeklyStrategyReview() },

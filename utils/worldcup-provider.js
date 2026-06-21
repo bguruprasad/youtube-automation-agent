@@ -17,7 +17,7 @@ const path = require('path');
 
 const BASE = 'https://api.football-data.org/v4';
 const COMP = 'WC'; // FIFA World Cup
-const CACHE_TTL_MS = 30 * 60 * 1000; // 30 min
+const CACHE_TTL_MS = 10 * 60 * 1000; // 10 min (responsive to just-finished matches while polling)
 
 let _cache = { key: null, at: 0, data: null };
 // Minimum ms to wait before the next request when the API says we're low.
@@ -93,7 +93,7 @@ async function getFinishedMatches({ from = null, to = null, logger = null } = {}
   if (!key) { if (logger) logger.warn('FOOTBALL_DATA_API_KEY not set; no WC matches'); return []; }
 
   const toD = to ? new Date(to) : new Date();
-  const fromD = from ? new Date(from) : new Date(toD.getTime() - 3 * 864e5); // 3-day window
+  const fromD = from ? new Date(from) : new Date(toD.getTime() - 1 * 864e5); // 1-day window (polling catches matches promptly)
   const cacheKey = `${fmt(fromD)}_${fmt(toD)}`;
   if (_cache.key === cacheKey && Date.now() - _cache.at < CACHE_TTL_MS) {
     return _cache.data;
