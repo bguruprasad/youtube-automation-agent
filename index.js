@@ -346,7 +346,7 @@ class YouTubeAutomationAgent {
           });
         }
 
-        const result = await this.agents.publishing.uploadOutputFolder(folderPath, { privacyStatus: privacy });
+        const result = await this.agents.publishing.uploadOutputFolder(folderPath, { privacyStatus: privacy, force });
         res.json({ success: true, ...result });
       } catch (error) {
         this.logger.error('Dashboard upload failed:', error);
@@ -370,7 +370,7 @@ class YouTubeAutomationAgent {
           return res.status(409).json({ success: false, alreadyUploaded: true,
             error: `Already uploaded (${existing.url}).`, uploaded: existing });
         }
-        const result = await this.agents.publishing.uploadOutputFolder(folderPath, { privacyStatus: privacy });
+        const result = await this.agents.publishing.uploadOutputFolder(folderPath, { privacyStatus: privacy, force });
         res.json({ success: true, ...result });
       } catch (error) {
         this.logger.error('Short upload failed:', error);

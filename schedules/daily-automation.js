@@ -249,15 +249,16 @@ class DailyAutomation {
           }
 
           seenSet.add(match.id);
+          // Persist the seen-set IMMEDIATELY after each match (not just at the
+          // end) so a crash/restart mid-loop can never cause a match to be
+          // re-generated and re-uploaded.
+          await this.db.setSetting('wc_processed_match_ids',
+            JSON.stringify(Array.from(seenSet).slice(-200)), 'Processed World Cup match IDs (seen-guard)');
           made.push({ id: match.id, fixture: `${match.homeTeam} ${match.homeScore}-${match.awayScore} ${match.awayTeam}`, ...result });
         } catch (e) {
           this.logger.error(`WC match ${match.id} failed: ${e.message}`);
         }
       }
-
-      // Persist the updated seen-set (cap to last 200 ids).
-      await this.db.setSetting('wc_processed_match_ids',
-        JSON.stringify(Array.from(seenSet).slice(-200)), 'Processed World Cup match IDs (seen-guard)');
 
       this.logger.success(`WC task: processed ${made.length} match(es), uploaded ${privacy}`);
       await this.logAutomationEvent('worldcup_match_videos', 'success', { processed: made.length, privacy, matches: made });

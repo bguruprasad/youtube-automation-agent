@@ -161,13 +161,27 @@ class PublishingSchedulingAgent {
    * Builds SEO title/description/tags from the folder's script.json and reuses
    * the verified uploadToYouTube() path. Returns { videoId, url }.
    */
-  async uploadOutputFolder(folderPath, { privacyStatus } = {}) {
+  async uploadOutputFolder(folderPath, { privacyStatus, force = false } = {}) {
     const path = require('path');
     const script = JSON.parse(await fsPromises.readFile(path.join(folderPath, 'script.json'), 'utf8'));
 
     const videoPath = path.join(folderPath, 'video.mp4');
     if (!fs.existsSync(videoPath)) {
       throw new Error('No video.mp4 in output folder; generate the video first.');
+    }
+
+    // Duplicate guard: if this folder was already uploaded, don't upload again
+    // (unless force). Defense-in-depth beyond the WC seen-guard, so a retry or
+    // re-run never double-posts the same video.
+    const markerPath = path.join(folderPath, 'youtube_upload.json');
+    if (!force && fs.existsSync(markerPath)) {
+      try {
+        const existing = JSON.parse(await fsPromises.readFile(markerPath, 'utf8'));
+        if (existing && existing.videoId) {
+          this.logger.info(`Skipping upload — already uploaded (${existing.url})`);
+          return { videoId: existing.videoId, url: existing.url, alreadyUploaded: true };
+        }
+      } catch { /* unreadable marker → fall through and upload */ }
     }
 
     // Prefer SEO already built and stored in script.seo (Shorts embed their
