@@ -111,6 +111,11 @@ When you need to understand the docs or project content:
 
 ### Video Assembly (in `utils/ai-video-generator.js`)
 - Output: 1920×1080, 30fps, with audio.
+- **Match-recap scoreboard mode**: pass `options.match = {homeTeam, awayTeam, homeScore, awayScore, homeCrest, awayCrest, label}` to `generateVideo/generateSlideshowVideo` → `_makeScoreboardOverlay()` renders a top scoreboard band (crests + big score + names + competition label) via sharp, composited over the AI scene like the normal title overlay. **Crests must be LOCAL image paths** (emoji flags don't render in sharp — `_countryFlag()` exists but is unused for this reason). Crests come from `utils/worldcup-provider.js`.
+
+### World Cup match videos (`utils/worldcup-provider.js`)
+- `getFinishedMatches({from,to,logger})` — football-data.org competition `WC`, FINISHED matches in a date window. **Rate-limit aware**: reads `X-Requests-Available-Minute`/`X-RequestCounter-Reset`, self-throttles when low, honors 429/Retry-After; caches the match list 30 min so a daily run makes ONE `/matches` call. Returns [] (never throws) to degrade safely. Needs `FOOTBALL_DATA_API_KEY` (now set).
+- `getCrest(url)` — **cache-first** crest fetch: local-first under `data/crests/` (gitignored), downloads + stores on miss. Verified live (0ms cache hit). Verified: 33 finished 2026 WC matches fetched.
 - 4 random styles per video for variety: `ken-burns`, `cinematic`, `clean`, `dynamic`. Ken Burns uses zoompan (zoom in/out, pan L/R).
 - Per-section duration is weighted by content length (not equal splits). Fade in/out (0.5s) between sections; transitions are currently hard cuts (xfade crossfade is a TODO).
 - **ffmpeg `drawtext` is UNAVAILABLE** in the local brew build (no `--enable-libfreetype`). Section title text is burned onto images via sharp SVG instead. Do not reach for `drawtext`.

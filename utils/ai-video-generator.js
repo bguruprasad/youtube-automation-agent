@@ -421,7 +421,11 @@ class AIVideoGenerator {
 
         // Generate a full-frame transparent text overlay and composite it AFTER
         // zoompan via ffmpeg overlay, so the title is never cropped by the zoom.
-        const textOverlay = await this._makeTextOverlay(sectionTitle, tempDir, i, { width: W, height: H });
+        // Match-recap mode: show a scoreboard band (flags + score) instead of the
+        // plain section title, so the video reads as an actual match recap.
+        const textOverlay = options.match
+          ? await this._makeScoreboardOverlay(options.match, tempDir, i, { width: W, height: H })
+          : await this._makeTextOverlay(sectionTitle, tempDir, i, { width: W, height: H });
 
         // zoompan encoding is CPU-heavy; use a fast preset + all cores, and a
         // timeout that scales with clip length (so long sections don't get
@@ -710,6 +714,111 @@ class AIVideoGenerator {
       this.logger.warn(`Placeholder card render failed: ${e.message}`);
       return null;
     }
+  }
+
+  // Full-frame transparent overlay with a football SCOREBOARD band near the top:
+  //   [CREST] HOME   homeScore - awayScore   AWAY [CREST]
+  // plus an optional competition label. Composited over the AI scene clip the
+  // same way as _makeTextOverlay. `match` = { homeTeam, awayTeam, homeScore,
+  // awayScore, homeCrest, awayCrest, label }. homeCrest/awayCrest are LOCAL image
+  // paths (the provider downloads them; emoji flags don't render in sharp). Names
+  // fall back gracefully; crests are optional. index caches per-clip.
+  async _makeScoreboardOverlay(match, tempDir, index = 0, dims = {}) {
+    if (!sharp || !match) return null;
+    try {
+      const W = dims.width || 1920;
+      const H = dims.height || 1080;
+      const portrait = H > W;
+
+      const home = this._escapeXml(String(match.homeTeam || 'Home'));
+      const away = this._escapeXml(String(match.awayTeam || 'Away'));
+      const hs = match.homeScore != null ? match.homeScore : '';
+      const as = match.awayScore != null ? match.awayScore : '';
+      const score = (hs !== '' || as !== '') ? `${hs} - ${as}` : 'vs';
+      const label = match.label ? this._escapeXml(String(match.label)) : '';
+
+      const nameSize = portrait ? 50 : 56;
+      const scoreSize = portrait ? 96 : 104;
+      const crestSize = portrait ? 110 : 120;
+      const labelSize = portrait ? 30 : 32;
+      const bandTop = portrait ? Math.round(H * 0.10) : Math.round(H * 0.05);
+      const bandH = (label ? labelSize + 16 : 0) + crestSize + nameSize + 90;
+      const cx = W / 2;
+      const labelY = bandTop + labelSize + 14;
+      const scoreY = bandTop + (label ? labelSize + 24 : 20) + scoreSize;
+      const crestTop = bandTop + (label ? labelSize + 16 : 12);
+      const nameY = scoreY + nameSize + 10;
+      const leftX = W * (portrait ? 0.26 : 0.30);
+      const rightX = W * (portrait ? 0.74 : 0.70);
+
+      const txt = (x, y, s, size, weight = '900', anchor = 'middle') => `
+        <text x="${x}" y="${y}" text-anchor="${anchor}" font-family="Arial Black, Helvetica, sans-serif"
+          font-size="${size}" font-weight="${weight}" stroke="#000" stroke-width="${Math.round(size/12)}"
+          fill="#000" paint-order="stroke">${s}</text>
+        <text x="${x}" y="${y}" text-anchor="${anchor}" font-family="Arial Black, Helvetica, sans-serif"
+          font-size="${size}" font-weight="${weight}" fill="#FFF">${s}</text>`;
+
+      const svg = Buffer.from(`
+        <svg width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <linearGradient id="sb" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stop-color="#000" stop-opacity="0.82"/>
+              <stop offset="100%" stop-color="#000" stop-opacity="0.62"/>
+            </linearGradient>
+          </defs>
+          <rect x="0" y="${bandTop}" width="${W}" height="${bandH}" fill="url(#sb)"/>
+          ${label ? txt(cx, labelY, label, labelSize, '700') : ''}
+          ${txt(cx, scoreY, this._escapeXml(score), scoreSize)}
+          ${txt(leftX, nameY, home, nameSize)}
+          ${txt(rightX, nameY, away, nameSize)}
+        </svg>`);
+
+      // Composite: transparent base <- text SVG <- crest images (resized).
+      const layers = [{ input: svg, top: 0, left: 0 }];
+      const addCrest = async (crestPath, centerX) => {
+        if (!crestPath) return;
+        try {
+          const resized = await sharp(crestPath)
+            .resize(crestSize, crestSize, { fit: 'inside', background: { r: 0, g: 0, b: 0, alpha: 0 } })
+            .png().toBuffer();
+          layers.push({ input: resized, top: Math.round(crestTop), left: Math.round(centerX - crestSize / 2) });
+        } catch (e) { this.logger.warn(`Crest render skipped: ${e.message}`); }
+      };
+      await addCrest(match.homeCrest, leftX);
+      await addCrest(match.awayCrest, rightX);
+
+      const outPath = path.join(tempDir, `scoreboard_${index}.png`);
+      await sharp({ create: { width: W, height: H, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } } })
+        .composite(layers)
+        .png()
+        .toFile(outPath);
+      return outPath;
+    } catch (e) {
+      this.logger.warn(`Scoreboard overlay render failed: ${e.message}`);
+      return null;
+    }
+  }
+
+  // ISO-3166 alpha-2 country code -> flag emoji (regional indicator pair).
+  // Football-data.org gives team names, not codes, so we also map common
+  // national-team names. Returns '' if unknown (overlay just omits the flag).
+  _countryFlag(nameOrCode) {
+    if (!nameOrCode) return '';
+    const NAME_TO_CC = {
+      brazil:'BR', argentina:'AR', france:'FR', england:'GB', spain:'ES', germany:'DE',
+      portugal:'PT', netherlands:'NL', italy:'IT', croatia:'HR', belgium:'BE', usa:'US',
+      'united states':'US', mexico:'MX', canada:'CA', japan:'JP', 'south korea':'KR',
+      morocco:'MA', uruguay:'UY', colombia:'CO', poland:'PL', switzerland:'CH',
+      denmark:'DK', senegal:'SN', ghana:'GH', nigeria:'NG', australia:'AU', qatar:'QA',
+      ecuador:'EC', iran:'IR', serbia:'RS', wales:'GB', 'saudi arabia':'SA', tunisia:'TN',
+      'costa rica':'CR', cameroon:'CM',
+    };
+    let cc = null;
+    const key = String(nameOrCode).trim().toLowerCase();
+    if (/^[a-z]{2}$/.test(key)) cc = key.toUpperCase();
+    else if (NAME_TO_CC[key]) cc = NAME_TO_CC[key];
+    if (!cc) return '';
+    return cc.replace(/./g, (c) => String.fromCodePoint(127397 + c.charCodeAt(0)));
   }
 
   /**
