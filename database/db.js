@@ -224,6 +224,8 @@ class Database {
         hearted INTEGER DEFAULT 0,
         reply_id TEXT,
         published_at TEXT,
+        is_reply INTEGER DEFAULT 0,
+        parent_id TEXT,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP,
         updated_at TEXT DEFAULT CURRENT_TIMESTAMP
       )`,
@@ -272,6 +274,11 @@ class Database {
     await this.executeQuery(
       'CREATE UNIQUE INDEX IF NOT EXISTS idx_notif_dedup ON notifications(dedup_key)'
     ).catch(() => {});
+
+    // Add reply-tracking columns to comment_queue for older DBs (idempotent;
+    // errors when the column already exists are ignored).
+    await this.executeQuery('ALTER TABLE comment_queue ADD COLUMN is_reply INTEGER DEFAULT 0').catch(() => {});
+    await this.executeQuery('ALTER TABLE comment_queue ADD COLUMN parent_id TEXT').catch(() => {});
 
     // Insert default settings
     await this.insertDefaultSettings();

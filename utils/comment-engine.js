@@ -45,26 +45,62 @@ class CommentEngine {
     return out;
   }
 
-  // Fetch top-level comments for one video. Returns normalized comments.
+  // Does an author display name look like our own channel? (Replies we posted.)
+  _isOwnAuthor(name) {
+    const ours = (process.env.CHANNEL_NAME || 'HalftimeReplay').replace(/[^a-z0-9]/gi, '').toLowerCase();
+    const a = String(name || '').replace(/[^a-z0-9]/gi, '').toLowerCase();
+    return !!a && (a === ours || a.includes(ours));
+  }
+
+  // Fetch comments for one video — top-level comments AND their replies (so
+  // replies to OUR replies are visible, not just the thread roots). Returns a
+  // flat normalized list. Replies carry isReply + parentId, and
+  // replyToOwn=true when the reply is in a thread we participated in (i.e. a
+  // direct response to the channel) — those are the conversations worth
+  // engaging. Our OWN comments are excluded (we don't reply to ourselves).
   async _fetchVideoComments(videoId, { max = 50 } = {}) {
     const out = [];
     try {
       const resp = await this.youtube.commentThreads.list({
-        part: 'snippet', videoId, maxResults: Math.min(max, 100), order: 'time',
+        part: 'snippet,replies', videoId, maxResults: Math.min(max, 100), order: 'time',
       });
       for (const item of (resp.data.items || [])) {
         const top = item.snippet?.topLevelComment;
         const s = top?.snippet;
         if (!s) continue;
-        out.push({
-          commentId: top.id,
-          videoId,
-          author: s.authorDisplayName,
-          text: s.textOriginal || s.textDisplay || '',
-          likeCount: s.likeCount || 0,
-          publishedAt: s.publishedAt,
-          totalReplies: item.snippet?.totalReplyCount || 0,
-        });
+        const totalReplies = item.snippet?.totalReplyCount || 0;
+        if (!this._isOwnAuthor(s.authorDisplayName)) {
+          out.push({
+            commentId: top.id, videoId, author: s.authorDisplayName,
+            text: s.textOriginal || s.textDisplay || '',
+            likeCount: s.likeCount || 0, publishedAt: s.publishedAt,
+            totalReplies, isReply: false, parentId: null, replyToOwn: false,
+          });
+        }
+
+        if (!totalReplies) continue;
+        // The commentThreads response inlines up to ~5 recent replies; fetch the
+        // full set only when there are more, to keep quota low.
+        let replies = item.replies?.comments || [];
+        if (totalReplies > replies.length) {
+          try {
+            const rr = await this.youtube.comments.list({ part: 'snippet', parentId: top.id, maxResults: 100 });
+            replies = rr.data.items || replies;
+          } catch (e) { this.logger.warn(`Replies fetch failed for ${top.id}: ${e.message}`); }
+        }
+        // Did WE participate in this thread? (root by us, or any reply by us)
+        const weAreInThread = this._isOwnAuthor(s.authorDisplayName) ||
+          replies.some(r => this._isOwnAuthor(r.snippet?.authorDisplayName));
+        for (const r of replies) {
+          const rs = r.snippet; if (!rs) continue;
+          if (this._isOwnAuthor(rs.authorDisplayName)) continue; // skip our own replies
+          out.push({
+            commentId: r.id, videoId, author: rs.authorDisplayName,
+            text: rs.textOriginal || rs.textDisplay || '',
+            likeCount: rs.likeCount || 0, publishedAt: rs.publishedAt,
+            totalReplies: 0, isReply: true, parentId: top.id, replyToOwn: weAreInThread,
+          });
+        }
       }
     } catch (e) {
       // commentsDisabled / not found / quota — skip this video gracefully.
@@ -88,6 +124,14 @@ class CommentEngine {
   async _analyze(comment, videoTitle) {
     if (!this.openai) return { classification: 'neutral', draftReply: '' };
     try {
+      // Reply-thread context: a reply in a thread we participated in is usually
+      // a follow-up to OUR reply (often a correction or pushback). Tell the LLM
+      // so it responds gracefully instead of treating it as a fresh comment.
+      const replyCtx = comment.isReply
+        ? (comment.replyToOwn
+            ? '\nNOTE: This is a REPLY in a thread where our channel already replied — likely a follow-up or pushback to us. Respond gracefully: if a viewer says an AI-generated image doesn\'t look like the real player, acknowledge it honestly and good-naturedly (our recaps use AI-generated visuals, not real match footage); do NOT insist the image is the real person.'
+            : '\nNOTE: This is a reply within another viewer\'s thread (not directed at us).')
+        : '';
       const resp = await this.openai.chat.completions.create({
         model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
         messages: [
@@ -99,12 +143,13 @@ class CommentEngine {
               'Classify the comment. Write a reply ONLY for positive or question comments; for spam/toxic/neutral set reply to "". ' +
               'Reply voice: friendly football fan, CONCISE (<=200 chars), warm. ' +
               'CRITICAL: be factual — do NOT invent stats, scores, player names, or events. ' +
+              'Our recap visuals are AI-GENERATED (not real footage), so never claim an image IS a real, specific person. ' +
               'If a question asks something you cannot answer from the comment or the video title, reply warmly but generally; never make up facts. ' +
               'Stay neutral on club/national rivalries; never argue or take sides; no politics.',
           },
           {
             role: 'user',
-            content: `Video: "${videoTitle}"\nComment by ${comment.author}: "${comment.text}"`,
+            content: `Video: "${videoTitle}"\nComment by ${comment.author}: "${comment.text}"${replyCtx}`,
           },
         ],
         temperature: 0.7, max_tokens: 200,
@@ -157,9 +202,10 @@ class CommentEngine {
         if (!dryRun) {
           await this.db.executeQuery(
             `INSERT OR IGNORE INTO comment_queue
-             (comment_id, video_id, video_title, author, text, classification, draft_reply, status)
-             VALUES (?,?,?,?,?,?,?,?)`,
-            [c.commentId, v.videoId, v.title, c.author, c.text, classification, draftReply, status]
+             (comment_id, video_id, video_title, author, text, classification, draft_reply, status, is_reply, parent_id)
+             VALUES (?,?,?,?,?,?,?,?,?,?)`,
+            [c.commentId, v.videoId, v.title, c.author, c.text, classification, draftReply, status,
+             c.isReply ? 1 : 0, c.parentId || null]
           );
         }
         results.items.push({ ...c, videoTitle: v.title, classification, draftReply, status });
@@ -212,7 +258,10 @@ class CommentEngine {
     if (!row) throw new Error('Comment not in queue');
     const text = (overrideText != null ? overrideText : row.draft_reply || '').trim();
     if (!text) throw new Error('No reply text to post');
-    const replyId = await this.postReply(commentId, text);
+    // YouTube comment threads are flat: a reply must attach to the TOP-LEVEL
+    // comment. If this queued item is itself a reply, post into its thread root.
+    const targetParent = (row.is_reply && row.parent_id) ? row.parent_id : commentId;
+    const replyId = await this.postReply(targetParent, text);
     await this.db.executeQuery(
       `UPDATE comment_queue SET status='posted', draft_reply=?, reply_id=?, published_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE comment_id=?`,
       [text, replyId, commentId]
