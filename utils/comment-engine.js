@@ -22,7 +22,8 @@ class CommentEngine {
   // Video IDs we've uploaded, from the youtube_upload.json markers (same source
   // the analytics report uses). Returns [{ videoId, title }].
   _ownVideos() {
-    const root = path.join(__dirname, '..', 'output');
+    const { outputRoot, shortsRoot } = require('./paths');
+    const root = outputRoot();
     const out = [];
     const scan = (dir, kind) => {
       let entries = [];
@@ -40,7 +41,7 @@ class CommentEngine {
       }
     };
     scan(root, 'long');
-    scan(path.join(root, 'shorts'), 'short');
+    scan(shortsRoot(), 'short');
     return out;
   }
 

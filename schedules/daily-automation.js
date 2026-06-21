@@ -213,8 +213,7 @@ class DailyAutomation {
           const result = await producer.produce(script, images);
           // Ledger the cost (the app helper reads script.json; available via this.app).
           if (this.app && this.app._ledgerFolderCost) {
-            const path = require('path');
-            await this.app._ledgerFolderCost(result.folder, 'short', path.join(__dirname, '..', shortsConfig.outputDir));
+            await this.app._ledgerFolderCost(result.folder, 'short', shortsConfig.outputDir);
           }
           made.push({ folder: result.folder, title: script.title });
         } catch (e) {
@@ -259,16 +258,16 @@ class DailyAutomation {
           const result = await this.app.generateMatchVideos(match, { formats: ['long', 'short'] });
 
           // Auto-upload both (best-effort) at the configured privacy.
+          const { outputRoot, shortsRoot } = require('../utils/paths');
           if (result.long?.folder) {
             try {
-              const fp = require('path').join(__dirname, '..', 'output', result.long.folder);
+              const fp = require('path').join(outputRoot(), result.long.folder);
               await this.agents.publishing.uploadOutputFolder(fp, { privacyStatus: privacy });
             } catch (e) { this.logger.warn(`WC long upload failed: ${e.message}`); }
           }
           if (result.short?.folder) {
             try {
-              const shortsConfig = require('../utils/shorts-config');
-              const fp = require('path').join(__dirname, '..', shortsConfig.outputDir, result.short.folder);
+              const fp = require('path').join(shortsRoot(), result.short.folder);
               await this.agents.publishing.uploadOutputFolder(fp, { privacyStatus: privacy });
             } catch (e) { this.logger.warn(`WC short upload failed: ${e.message}`); }
           }

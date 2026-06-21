@@ -13,8 +13,9 @@ const path = require('path');
 const { Database } = require('../database/db');
 
 const APPLY = process.argv.includes('--apply');
-const OUT = path.join(__dirname, '..', 'output');
-const SHORTS = path.join(OUT, 'shorts');
+const { outputRoot, shortsRoot } = require('../utils/paths');
+const OUT = outputRoot();
+const SHORTS = shortsRoot();
 
 // category for a folder: shorts dir -> short or match_recap; output dir -> video
 // or match_recap. We tag match recaps via script.meta.matchRecap.

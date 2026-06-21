@@ -11,14 +11,16 @@
 //   node scripts/backfill-costs.js --force --apply   # also re-estimate folders
 //        that already have a *backfilled* cost (never touches live-metered ones)
 
+require('dotenv').config(); // so OUTPUT_DIR is honored when run standalone
 const fs = require('fs');
 const path = require('path');
 const { estimateFromFolder } = require('../utils/cost-meter');
 
 const APPLY = process.argv.includes('--apply');
 const FORCE = process.argv.includes('--force');
-const OUT = path.join(__dirname, '..', 'output');
-const SHORTS = path.join(OUT, 'shorts');
+const { outputRoot, shortsRoot } = require('../utils/paths');
+const OUT = outputRoot();
+const SHORTS = shortsRoot();
 
 function scan(dir, format) {
   let entries;

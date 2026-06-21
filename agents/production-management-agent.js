@@ -160,7 +160,7 @@ class ProductionManagementAgent {
       .replace(/^-|-$/g, '')
       .slice(0, 50);
     const dirName = `${ts}_${slug}`;
-    const outputDir = path.join(__dirname, '..', 'output', dirName);
+    const outputDir = path.join(require('../utils/paths').outputRoot(), dirName);
     const assetsDir = path.join(outputDir, 'assets');
     await fs.mkdir(assetsDir, { recursive: true });
     return { outputDir, assetsDir, dirName };

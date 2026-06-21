@@ -742,7 +742,8 @@ class AnalyticsOptimizationAgent {
   async getUploadedVideosReport() {
     const fs = require('fs');
     const path = require('path');
-    const root = path.join(__dirname, '..', 'output');
+    const { outputRoot, shortsRoot } = require('../utils/paths');
+    const root = outputRoot();
 
     // Collect { videoId, url, privacy, uploadedAt, folder, kind, title, cost }.
     const collect = (dir, kind) => {
@@ -767,7 +768,7 @@ class AnalyticsOptimizationAgent {
       return out;
     };
 
-    const videos = [...collect(root, 'long'), ...collect(path.join(root, 'shorts'), 'short')];
+    const videos = [...collect(root, 'long'), ...collect(shortsRoot(), 'short')];
     if (!videos.length) return { totalVideos: 0, videos: [], totals: null, apiAvailable: !!this.youtube };
 
     // Batch-fetch live stats (50 ids/call) when the API is configured.
@@ -806,7 +807,7 @@ class AnalyticsOptimizationAgent {
       // changes made directly on YouTube).
       if (livePrivacy && livePrivacy !== v.privacy) {
         try {
-          const dir = path.join(root, v.kind === 'short' ? 'shorts' : '', v.folder);
+          const dir = path.join(v.kind === 'short' ? shortsRoot() : root, v.folder);
           const mp = path.join(dir, 'youtube_upload.json');
           const m = JSON.parse(fs.readFileSync(mp, 'utf8'));
           m.privacy = livePrivacy;

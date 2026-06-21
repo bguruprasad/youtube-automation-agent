@@ -19,8 +19,10 @@ module.exports = {
   maxDuration: parseInt(process.env.SHORTS_MAX_DURATION || '60', 10),
   // How many images a fresh single-moment Short uses.
   imageCount: parseInt(process.env.SHORTS_IMAGE_COUNT || '2', 10),
-  // Output directory for Shorts.
-  outputDir: process.env.SHORTS_OUTPUT_DIR || 'output/shorts',
+  // Output directory for Shorts (ABSOLUTE path). Derives from OUTPUT_DIR (or
+  // SHORTS_OUTPUT_DIR override) via utils/paths so all output can live outside
+  // the repo. Was previously the relative string 'output/shorts'.
+  outputDir: require('./paths').shortsRoot(),
   // Optional: football-data.org key enables RECENT real-match moments.
   footballDataApiKey: process.env.FOOTBALL_DATA_API_KEY || null,
 };

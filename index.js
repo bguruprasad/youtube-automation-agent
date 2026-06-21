@@ -1,6 +1,7 @@
 require('dotenv').config(); // load .env (FOOTBALL_DATA_API_KEY, CHANNEL_*, SHORTS_*, etc.)
 const express = require('express');
 const path = require('path');
+const { outputRoot, shortsRoot } = require('./utils/paths'); // OUTPUT_DIR-aware paths
 const { Logger } = require('./utils/logger');
 const { Database } = require('./database/db');
 const { CredentialManager } = require('./utils/credential-manager');
@@ -117,7 +118,7 @@ class YouTubeAutomationAgent {
     // Serve output files (thumbnails, videos, etc.)
     this.app.get('/output/:folder/:file', (req, res) => {
       const { folder, file } = req.params;
-      const filePath = path.join(__dirname, 'output', folder, file);
+      const filePath = path.join(outputRoot(), folder, file);
       res.sendFile(filePath, (err) => {
         if (err) {
           res.status(404).json({ error: 'File not found' });
@@ -160,7 +161,7 @@ class YouTubeAutomationAgent {
     // List previous generations
     this.app.get('/outputs', async (req, res) => {
       try {
-        const outputDir = path.join(__dirname, 'output');
+        const outputDir = outputRoot();
         const fs = require('fs').promises;
         const dirs = await fs.readdir(outputDir).catch(() => []);
         const outputs = [];
@@ -418,7 +419,7 @@ class YouTubeAutomationAgent {
     this.app.post('/upload/:folder', async (req, res) => {
       try {
         const folder = path.basename(req.params.folder); // prevent path traversal
-        const folderPath = path.join(__dirname, 'output', folder);
+        const folderPath = path.join(outputRoot(), folder);
         const privacy = (req.body && req.body.privacy) || undefined;
         const force = !!(req.body && req.body.force);
 
@@ -449,7 +450,7 @@ class YouTubeAutomationAgent {
       try {
         const shortsConfig = require('./utils/shorts-config');
         const folder = path.basename(req.params.folder);
-        const folderPath = path.join(__dirname, shortsConfig.outputDir, folder);
+        const folderPath = path.join(shortsConfig.outputDir, folder);
         const privacy = (req.body && req.body.privacy) || undefined;
         const force = !!(req.body && req.body.force);
         const fsp = require('fs').promises;
@@ -473,7 +474,7 @@ class YouTubeAutomationAgent {
       const shortsConfig = require('./utils/shorts-config');
       const folder = path.basename(req.params.folder);
       const file = path.basename(req.params.file);
-      res.sendFile(path.join(__dirname, shortsConfig.outputDir, folder, file));
+      res.sendFile(path.join(shortsConfig.outputDir, folder, file));
     });
 
     // List generated Shorts (output/shorts/).
@@ -481,7 +482,7 @@ class YouTubeAutomationAgent {
       try {
         const shortsConfig = require('./utils/shorts-config');
         const fsp = require('fs').promises;
-        const shortsDir = path.join(__dirname, shortsConfig.outputDir);
+        const shortsDir = shortsConfig.outputDir;
         const dirs = await fsp.readdir(shortsDir).catch(() => []);
         const shorts = [];
         for (const dir of dirs) {
@@ -559,7 +560,7 @@ class YouTubeAutomationAgent {
         }
 
         const result = await this.shortsProducer.produce(script, images);
-        await this._ledgerFolderCost(result.folder, 'short', path.join(__dirname, shortsConfig.outputDir));
+        await this._ledgerFolderCost(result.folder, 'short', shortsConfig.outputDir);
         res.json({ success: true, folder: result.folder, title: script.title, moment: moment.title });
       } catch (error) {
         this.logger.error('Short generation failed:', error);
@@ -592,7 +593,7 @@ class YouTubeAutomationAgent {
     this.app.post('/short-from/:folder', async (req, res) => {
       try {
         const folder = path.basename(req.params.folder);
-        const srcPath = path.join(__dirname, 'output', folder);
+        const srcPath = path.join(outputRoot(), folder);
         const fsp = require('fs').promises;
         const script = JSON.parse(await fsp.readFile(path.join(srcPath, 'script.json'), 'utf8'));
 
@@ -622,7 +623,7 @@ class YouTubeAutomationAgent {
         const result = await this.shortsProducer.produce(shortScript, images, {
           sourceThumb: require('fs').existsSync(srcThumb) ? srcThumb : null,
         });
-        await this._ledgerFolderCost(result.folder, 'short', path.join(__dirname, require('./utils/shorts-config').outputDir));
+        await this._ledgerFolderCost(result.folder, 'short', require('./utils/shorts-config').outputDir);
         res.json({ success: true, folder: result.folder, title: shortScript.title, source: folder });
       } catch (error) {
         this.logger.error('Short-from-existing failed:', error);
@@ -719,7 +720,7 @@ class YouTubeAutomationAgent {
         }
         const seo = this._buildMatchSeo(match, script, { isShort: true });
         const r = await this.shortsProducer.produce(script, images, { match: overlay, seo });
-        await this._ledgerFolderCost(r.folder, 'match_recap', path.join(__dirname, shortsConfig.outputDir));
+        await this._ledgerFolderCost(r.folder, 'match_recap', shortsConfig.outputDir);
         out.short = { folder: r.folder, title: script.title };
         this.logger.info(`Match Short created: ${r.folder}`);
       } catch (e) { this.logger.error(`Match Short failed: ${e.message}`); out.shortError = e.message; }
@@ -734,7 +735,7 @@ class YouTubeAutomationAgent {
         const { folderTimestamp } = require('./utils/timestamp');
         const slug = (script.title || fixture).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 50);
         const folder = `${folderTimestamp()}_${slug}`;
-        const folderPath = path.join(__dirname, 'output', folder);
+        const folderPath = path.join(outputRoot(), folder);
         const assetsDir = path.join(folderPath, 'assets');
         await fsp.mkdir(assetsDir, { recursive: true });
 
@@ -767,7 +768,7 @@ class YouTubeAutomationAgent {
           meta: { type: 'long', resolution: '1920x1080', durationSec: script.duration, matchRecap: true,
             models: { image: 'gpt-image-1', tts: gen.elevenLabsApiKey ? 'elevenlabs' : 'tts-1-hd' }, generatedAt: new Date().toISOString() } };
         await fsp.writeFile(path.join(folderPath, 'script.json'), JSON.stringify(scriptOut, null, 2));
-        await this._ledgerFolderCost(folder, 'match_recap', path.join(__dirname, 'output'));
+        await this._ledgerFolderCost(folder, 'match_recap', outputRoot());
         out.long = { folder, title: script.title };
         this.logger.info(`Match recap created: ${folder}`);
       } catch (e) { this.logger.error(`Match recap failed: ${e.message}`); out.longError = e.message; }
@@ -816,7 +817,7 @@ class YouTubeAutomationAgent {
     // Record cost in the ledger (folder name is the basename of outputDir).
     try {
       if (productionData.outputDir) {
-        await this._ledgerFolderCost(path.basename(productionData.outputDir), 'video', path.join(__dirname, 'output'));
+        await this._ledgerFolderCost(path.basename(productionData.outputDir), 'video', outputRoot());
       }
     } catch (e) { this.logger.warn(`Long-video ledger record failed: ${e.message}`); }
 
