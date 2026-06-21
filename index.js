@@ -718,6 +718,19 @@ class YouTubeAutomationAgent {
     };
   }
 
+  // Persist the raw normalized match object (teams, scores, ids, dates) into a
+  // folder as match.json. This is the audit trail for "what score did we use?":
+  // without it, answering required re-querying the provider live. Best-effort.
+  async _writeMatchJson(folderPath, match) {
+    try {
+      const fsp = require('fs').promises;
+      await fsp.writeFile(
+        path.join(folderPath, 'match.json'),
+        JSON.stringify({ ...match, _savedAt: new Date().toISOString(), _source: 'football-data.org' }, null, 2)
+      );
+    } catch (e) { this.logger.warn(`match.json write failed: ${e.message}`); }
+  }
+
   // Generate recap videos for one match: a long landscape recap and/or a short.
   // `formats` selects which (default both). Returns { long, short } folder info.
   // Does NOT upload — caller decides (scheduler auto-uploads unlisted).
@@ -744,6 +757,7 @@ class YouTubeAutomationAgent {
         }
         const seo = this._buildMatchSeo(match, script, { isShort: true });
         const r = await this.shortsProducer.produce(script, images, { match: overlay, seo });
+        await this._writeMatchJson(r.folderPath, match);
         await this._ledgerFolderCost(r.folder, 'match_recap', shortsConfig.outputDir);
         await this.db.upsertContent({ folder: r.folder, type: 'match_recap', title: script.title });
         out.short = { folder: r.folder, title: script.title };
@@ -793,6 +807,7 @@ class YouTubeAutomationAgent {
           meta: { type: 'long', resolution: '1920x1080', durationSec: script.duration, matchRecap: true,
             models: { image: 'gpt-image-1', tts: gen.elevenLabsApiKey ? 'elevenlabs' : 'tts-1-hd' }, generatedAt: new Date().toISOString() } };
         await fsp.writeFile(path.join(folderPath, 'script.json'), JSON.stringify(scriptOut, null, 2));
+        await this._writeMatchJson(folderPath, match);
         await this._ledgerFolderCost(folder, 'match_recap', outputRoot());
         await this.db.upsertContent({ folder, type: 'match_recap', title: script.title });
         out.long = { folder, title: script.title };

@@ -295,6 +295,11 @@ class DailyAutomation {
           }
           if (vc.checked) this.logger.info(`WC task: score confirmed ${match.homeTeam} ${match.homeScore}-${match.awayScore} ${match.awayTeam} (second source agrees)`);
 
+          // Raw fixture from the primary feed, logged before generation so the
+          // exact score we acted on is always in the logs (not just derived from
+          // the LLM-written title). Matches the manual /generate-match log.
+          this.logger.info(`WC task: generating for raw fixture — ${match.homeTeam} ${match.homeScore}-${match.awayScore} ${match.awayTeam} (matchId=${match.id}, formats=[${formats.join(',')}])`);
+
           const result = await this.app.generateMatchVideos(match, { formats });
 
           // Auto-upload both (best-effort) at the configured privacy.
