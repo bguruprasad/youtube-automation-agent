@@ -16,7 +16,8 @@ class DailyAutomation {
     this.taskMeta = {
       'daily-content-generation': { cron: '0 6 * * *', label: 'Daily content generation (long video)', run: () => this.runDailyContentGeneration() },
       'daily-shorts-generation': { cron: '0 7 * * *', label: 'Daily Shorts generation', run: () => this.runDailyShortsGeneration() },
-      'worldcup-match-videos': { cron: '0 * * * *', label: 'World Cup match videos (polls hourly; recap + Short after full-time, second-source score cross-check, auto-upload unlisted)', run: () => this.runWorldCupMatchVideos() },
+      'worldcup-shorts': { cron: '0 * * * *', label: 'World Cup match SHORTS (polls hourly; vertical recap after full-time, second-source score cross-check, auto-upload unlisted)', run: () => this.runWorldCupShorts() },
+      'worldcup-longs':  { cron: '0 * * * *', label: 'World Cup match LONG recaps (polls hourly; landscape recap, second-source score cross-check, auto-upload unlisted)', run: () => this.runWorldCupLongs() },
       'comment-engagement': { cron: '0 */2 * * *', label: 'Comment engagement (drafts replies to new comments into the review queue every 2h)', run: () => this.runCommentEngagement() },
       'publish-queue-processing': { cron: '*/15 * * * *', label: 'Publish queue processing', run: () => this.processPublishQueue() },
       'daily-analytics':          { cron: '0 9 * * *',  label: 'Daily analytics', run: () => this.collectDailyAnalytics() },
@@ -49,6 +50,13 @@ class DailyAutomation {
     if (this.disabledTasks.size) {
       this.logger.info(`Disabled tasks: ${Array.from(this.disabledTasks).join(', ')}`);
     }
+
+    // One-time migration: the World Cup task used to be a single combined task
+    // with one shared seen-guard (wc_processed_match_ids). It's now split into
+    // separate shorts/longs tasks, each with its own per-format seen key. Seed
+    // both per-format keys from the old shared one (only if empty) so already-
+    // processed matches aren't re-generated/re-uploaded under the new tasks.
+    await this._migrateWcSeenGuard();
 
     await this.setupScheduledTasks();
 
@@ -233,40 +241,53 @@ class DailyAutomation {
   // For each NEW finished World Cup match (since last run), generate a long recap
   // + a Short, then auto-upload both UNLISTED. A seen-guard (DB setting
   // `wc_processed_match_ids`) ensures each match yields videos exactly once.
-  async runWorldCupMatchVideos() {
+  // Seed per-format WC seen-guards from the legacy shared key (idempotent).
+  async _migrateWcSeenGuard() {
+    try {
+      const legacy = await this.db.getSetting('wc_processed_match_ids');
+      if (!legacy) return;
+      for (const format of ['short', 'long']) {
+        const key = `wc_processed_match_ids_${format}`;
+        const existing = await this.db.getSetting(key);
+        if (!existing) {
+          await this.db.setSetting(key, legacy, `Processed World Cup match IDs for ${format}s (seen-guard, migrated)`);
+          this.logger.info(`Migrated WC seen-guard → ${key}`);
+        }
+      }
+    } catch (e) { this.logger.warn(`WC seen-guard migration failed: ${e.message}`); }
+  }
+
+  // Thin scheduler entry points: shorts and longs are SEPARATE tasks (separate
+  // crons + enable/disable) so each format can be controlled independently.
+  async runWorldCupShorts() { return this._runWorldCupForFormat('short'); }
+  async runWorldCupLongs()  { return this._runWorldCupForFormat('long'); }
+
+  // Shared core: generate one FORMAT ('short'|'long') of World Cup match recaps
+  // for newly-finished matches. Each format keeps its OWN seen-guard
+  // (wc_processed_match_ids_<format>) so the two tasks never block each other —
+  // a match can be made as a Short and (independently) as a long.
+  async _runWorldCupForFormat(format) {
+    const eventType = `worldcup_${format}s`;
+    const tag = `WC ${format}s`;
     try {
       if (!this.app || typeof this.app.generateMatchVideos !== 'function') {
-        this.logger.warn('WC task: app reference unavailable; skipping');
+        this.logger.warn(`${tag}: app reference unavailable; skipping`);
         return;
       }
       const wc = require('../utils/worldcup-provider');
       const matches = await wc.getFinishedMatches({ logger: this.logger });
-      if (!matches.length) { this.logger.info('WC task: no finished matches in window'); return; }
+      if (!matches.length) { this.logger.info(`${tag}: no finished matches in window`); return; }
 
-      // Seen-guard.
+      // Per-format seen-guard.
+      const seenKey = `wc_processed_match_ids_${format}`;
       let seen = [];
-      try { seen = JSON.parse(await this.db.getSetting('wc_processed_match_ids') || '[]'); } catch {}
+      try { seen = JSON.parse(await this.db.getSetting(seenKey) || '[]'); } catch {}
       const seenSet = new Set(seen);
       const fresh = matches.filter(m => !seenSet.has(m.id));
-      if (!fresh.length) { this.logger.info('WC task: all finished matches already processed'); return; }
+      if (!fresh.length) { this.logger.info(`${tag}: all finished matches already processed`); return; }
 
-      this.logger.info(`WC task: ${fresh.length} new match(es) to process`);
+      this.logger.info(`${tag}: ${fresh.length} new match(es) to process`);
       const privacy = (await this.db.getSetting('wc_upload_privacy')) || 'unlisted';
-      // Which formats to produce per match. Default both; settable via the
-      // `wc_formats` setting (JSON array). Shorts get more traction than longs,
-      // so longs can be disabled here without touching the long pipeline.
-      let formats = ['long', 'short'];
-      try {
-        const raw = await this.db.getSetting('wc_formats');
-        if (raw) {
-          const parsed = JSON.parse(raw);
-          if (Array.isArray(parsed) && parsed.length) {
-            formats = parsed.filter(f => f === 'long' || f === 'short');
-          }
-        }
-      } catch {}
-      if (!formats.length) formats = ['short']; // never leave it empty
-      this.logger.info(`WC task: formats = [${formats.join(', ')}]`);
       const made = [];
 
       const crosscheck = require('../utils/score-crosscheck');
@@ -279,10 +300,11 @@ class DailyAutomation {
           // cross-check that can't run (no key / lookup down) fails open.
           const vc = await crosscheck.verifyMatch(match, { logger: this.logger });
           if (vc.checked && !vc.ok) {
-            this.logger.warn(`WC task: SCORE MISMATCH for ${vc.fixture} — primary ${vc.primary} vs second ${vc.second}; skipping (will retry next cycle)`);
-            await this.logAutomationEvent('worldcup_match_videos', 'skipped', { matchId: match.id, fixture: vc.fixture, primary: vc.primary, second: vc.second });
+            this.logger.warn(`${tag}: SCORE MISMATCH for ${vc.fixture} — primary ${vc.primary} vs second ${vc.second}; skipping (will retry next cycle)`);
+            await this.logAutomationEvent(eventType, 'skipped', { matchId: match.id, fixture: vc.fixture, primary: vc.primary, second: vc.second });
             // Surface to the dashboard notification list (deduped per match so
-            // hourly re-checks refresh one entry rather than stacking).
+            // hourly re-checks refresh one entry rather than stacking; not per
+            // format, so the operator sees one alert per bad match).
             try {
               await this.db.addNotification({
                 level: 'warning',
@@ -293,47 +315,47 @@ class DailyAutomation {
             } catch (e) { this.logger.warn(`Notification add failed: ${e.message}`); }
             continue;
           }
-          if (vc.checked) this.logger.info(`WC task: score confirmed ${match.homeTeam} ${match.homeScore}-${match.awayScore} ${match.awayTeam} (second source agrees)`);
+          if (vc.checked) this.logger.info(`${tag}: score confirmed ${match.homeTeam} ${match.homeScore}-${match.awayScore} ${match.awayTeam} (second source agrees)`);
 
           // Raw fixture from the primary feed, logged before generation so the
           // exact score we acted on is always in the logs (not just derived from
           // the LLM-written title). Matches the manual /generate-match log.
-          this.logger.info(`WC task: generating for raw fixture — ${match.homeTeam} ${match.homeScore}-${match.awayScore} ${match.awayTeam} (matchId=${match.id}, formats=[${formats.join(',')}])`);
+          this.logger.info(`${tag}: generating for raw fixture — ${match.homeTeam} ${match.homeScore}-${match.awayScore} ${match.awayTeam} (matchId=${match.id})`);
 
-          const result = await this.app.generateMatchVideos(match, { formats });
+          const result = await this.app.generateMatchVideos(match, { formats: [format] });
 
-          // Auto-upload both (best-effort) at the configured privacy.
+          // Auto-upload (best-effort) at the configured privacy.
           const { outputRoot, shortsRoot } = require('../utils/paths');
-          if (result.long?.folder) {
+          if (format === 'long' && result.long?.folder) {
             try {
               const fp = require('path').join(outputRoot(), result.long.folder);
               await this.agents.publishing.uploadOutputFolder(fp, { privacyStatus: privacy });
-            } catch (e) { this.logger.warn(`WC long upload failed: ${e.message}`); }
+            } catch (e) { this.logger.warn(`${tag} upload failed: ${e.message}`); }
           }
-          if (result.short?.folder) {
+          if (format === 'short' && result.short?.folder) {
             try {
               const fp = require('path').join(shortsRoot(), result.short.folder);
               await this.agents.publishing.uploadOutputFolder(fp, { privacyStatus: privacy });
-            } catch (e) { this.logger.warn(`WC short upload failed: ${e.message}`); }
+            } catch (e) { this.logger.warn(`${tag} upload failed: ${e.message}`); }
           }
 
           seenSet.add(match.id);
           // Persist the seen-set IMMEDIATELY after each match (not just at the
           // end) so a crash/restart mid-loop can never cause a match to be
           // re-generated and re-uploaded.
-          await this.db.setSetting('wc_processed_match_ids',
-            JSON.stringify(Array.from(seenSet).slice(-200)), 'Processed World Cup match IDs (seen-guard)');
+          await this.db.setSetting(seenKey,
+            JSON.stringify(Array.from(seenSet).slice(-200)), `Processed World Cup match IDs for ${format}s (seen-guard)`);
           made.push({ id: match.id, fixture: `${match.homeTeam} ${match.homeScore}-${match.awayScore} ${match.awayTeam}`, ...result });
         } catch (e) {
-          this.logger.error(`WC match ${match.id} failed: ${e.message}`);
+          this.logger.error(`${tag}: match ${match.id} failed: ${e.message}`);
         }
       }
 
-      this.logger.success(`WC task: processed ${made.length} match(es), uploaded ${privacy}`);
-      await this.logAutomationEvent('worldcup_match_videos', 'success', { processed: made.length, privacy, matches: made });
+      this.logger.success(`${tag}: processed ${made.length} match(es), uploaded ${privacy}`);
+      await this.logAutomationEvent(eventType, 'success', { processed: made.length, privacy, matches: made });
     } catch (error) {
-      this.logger.error('WC match videos task failed:', error);
-      await this.logAutomationEvent('worldcup_match_videos', 'error', { error: error.message });
+      this.logger.error(`${tag} task failed:`, error);
+      await this.logAutomationEvent(eventType, 'error', { error: error.message });
     }
   }
 
