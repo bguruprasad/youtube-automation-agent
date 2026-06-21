@@ -539,9 +539,15 @@ class YouTubeAutomationAgent {
         const { CostMeter } = require('./utils/cost-meter');
         this.agents.production.aiVideoGenerator.costMeter = new CostMeter();
 
-        // Fresh portrait, low-quality images.
+        // Fresh portrait, low-quality images. Build a richer prompt from the
+        // moment context + the script's own visual direction so the image
+        // reflects the actual moment (team/kit/setting), framed to avoid a
+        // wrong face being the subject (we can't render real player likenesses).
         const images = [];
-        const visualPrompt = `${moment.title}. ${moment.hint || ''} Football/soccer, dramatic, cinematic.`;
+        const sceneDirection = (script.mainContent?.sections || [])
+          .map(s => Array.isArray(s.visuals) ? s.visuals.join(', ') : s.visuals).filter(Boolean).join('; ');
+        const visualPrompt = this.agents.production.aiVideoGenerator.buildSceneImagePrompt(
+          moment.title, { hint: moment.hint, sceneDirection });
         for (let i = 0; i < shortsConfig.imageCount; i++) {
           const assets = await this.agents.production.aiVideoGenerator.generateVisualAssets(
             visualPrompt, 'cinematic', 1,
@@ -740,8 +746,12 @@ class YouTubeAutomationAgent {
     const gen = this.agents.production.aiVideoGenerator;
     const overlay = await this._buildMatchOverlay(match);
     const fixture = `${match.homeTeam} ${match.homeScore}-${match.awayScore} ${match.awayTeam}`;
-    const visualPrompt = `Dramatic football (soccer) match scene, packed World Cup stadium, ` +
-      `players competing on the pitch, cinematic floodlights. Theme: ${fixture}. No text, no watermarks.`;
+    // Richer scene prompt: name the actual teams so the model renders the right
+    // national kits, framed to avoid relying on a recognizable face.
+    const visualPrompt = gen.buildSceneImagePrompt(
+      `${fixture} — ${match.competition || 'FIFA World Cup'}`,
+      { teams: { home: match.homeTeam, away: match.awayTeam },
+        kits: { home: `${match.homeTeam} national team`, away: `${match.awayTeam} national team` } });
     const out = {};
 
     // ---- SHORT ----

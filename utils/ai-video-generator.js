@@ -289,6 +289,46 @@ class AIVideoGenerator {
       `No text, no watermarks, no real identifiable faces.`;
   }
 
+  // Build a richer scene-image prompt for a football moment/match. Pulls in the
+  // factual context (hint/narration) and the script's own visual direction so
+  // the image reflects what's actually being narrated — team, kit, opponent,
+  // setting — instead of a generic stadium shot.
+  //
+  // Deliberately does NOT try to render a specific real player's FACE: gpt-image-1
+  // won't reliably reproduce a real celebrity likeness (and it trips the safety
+  // filter), so when the moment is about a named player we frame the shot to
+  // avoid a face being the subject — action/wide/over-the-shoulder/from-behind,
+  // motion blur — so a wrong face is never the focal point. (TODO: a real-likeness
+  // image path is parked for later exploration.)
+  //
+  // opts: { hint, sceneDirection, teams:{home,away}, kits:{home,away} }
+  buildSceneImagePrompt(subject, opts = {}) {
+    const { hint = '', sceneDirection = '', teams = null, kits = null } = opts;
+    const parts = [];
+    parts.push(`Dramatic, photorealistic football (soccer) scene depicting: ${subject}.`);
+    if (hint) parts.push(`Context: ${hint}`);
+    if (sceneDirection) parts.push(`Scene: ${sceneDirection}`);
+    if (teams && (teams.home || teams.away)) {
+      const fixture = [teams.home, teams.away].filter(Boolean).join(' vs ');
+      parts.push(`Match: ${fixture}.`);
+    }
+    if (kits && (kits.home || kits.away)) {
+      const k = [];
+      if (kits.home) k.push(`one team in ${kits.home} kit`);
+      if (kits.away) k.push(`opponents in ${kits.away} kit`);
+      parts.push(`Accurate kits: ${k.join(', ')}.`);
+    }
+    // Framing that avoids relying on a recognizable face (we can't render a real
+    // player's likeness): action shots, motion, distance, from behind.
+    parts.push(
+      'Frame as a dynamic action shot — player in motion mid-celebration or mid-play, ' +
+      'shot from a distance or from behind / over the shoulder, motion blur, faces turned away or not the focus. ' +
+      'Packed stadium, cinematic floodlights. No text, no watermarks, no scoreboard graphics, ' +
+      'no attempt to depict a specific real identifiable person\'s face.'
+    );
+    return parts.join(' ');
+  }
+
   enhanceVisualPrompt(prompt, style) {
     const styleEnhancements = {
       modern: "clean modern design, bright natural lighting, professional photography, shallow depth of field",
