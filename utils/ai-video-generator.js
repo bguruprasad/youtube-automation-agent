@@ -737,17 +737,31 @@ class AIVideoGenerator {
       const score = (hs !== '' || as !== '') ? `${hs} - ${as}` : 'vs';
       const label = match.label ? this._escapeXml(String(match.label)) : '';
 
+      // Locked layout (matches the approved sb_plus10_121 mockup). Crests are
+      // +10% and nudged DOWN from the score's optical center so they sit level
+      // with the score instead of riding high; even top/bottom padding.
       const nameSize = portrait ? 50 : 56;
       const scoreSize = portrait ? 96 : 104;
-      const crestSize = portrait ? 110 : 120;
+      const crestSize = portrait ? 121 : 132;   // +10%
       const labelSize = portrait ? 30 : 32;
+      const PAD_TOP = portrait ? 20 : 22;
+      const PAD_BOTTOM = portrait ? 30 : 32;
+      const gapLabelRow = portrait ? 30 : 32;   // label baseline -> row top
+      const gapRowName = portrait ? 14 : 16;    // row bottom -> name
+      const NUDGE = portrait ? 28 : 30;         // push crests below score center
+      const SCORE_CENTER_FACTOR = 0.370;        // measured optical center of digits
+
       const bandTop = portrait ? Math.round(H * 0.10) : Math.round(H * 0.05);
-      const bandH = (label ? labelSize + 16 : 0) + crestSize + nameSize + 90;
       const cx = W / 2;
-      const labelY = bandTop + labelSize + 14;
-      const scoreY = bandTop + (label ? labelSize + 24 : 20) + scoreSize;
-      const crestTop = bandTop + (label ? labelSize + 16 : 12);
-      const nameY = scoreY + nameSize + 10;
+      const labelY = bandTop + PAD_TOP + labelSize;            // label baseline
+      const rowTop = labelY + (label ? gapLabelRow : 0);
+      const scoreY = rowTop + scoreSize;                       // score baseline
+      const rowBottom = rowTop + Math.max(scoreSize, crestSize);
+      const nameY = rowBottom + gapRowName + nameSize;         // name baseline
+      const bandH = nameY + PAD_BOTTOM - bandTop;
+
+      const scoreCenterY = scoreY - scoreSize * SCORE_CENTER_FACTOR;
+      const crestTop = Math.round(scoreCenterY - crestSize / 2 + NUDGE);
       const leftX = W * (portrait ? 0.26 : 0.30);
       const rightX = W * (portrait ? 0.74 : 0.70);
 
