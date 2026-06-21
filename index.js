@@ -231,6 +231,27 @@ class YouTubeAutomationAgent {
       }
     });
 
+    // Daily spend by category (for admin cost analytics / future graphs).
+    // ?days=30. Returns raw rows + a pivoted series ready for charting.
+    this.app.get('/costs/daily', async (req, res) => {
+      try {
+        const days = parseInt(req.query.days) || 30;
+        const rows = await this.db.getDailyCosts(days);
+        // Pivot: { dates:[...], categories:[...], series:{cat:[amts aligned to dates]}, totalsByCategory, grandTotal }
+        const dates = [...new Set(rows.map(r => r.date))].sort();
+        const categories = [...new Set(rows.map(r => r.category))].sort();
+        const idx = Object.fromEntries(dates.map((d, i) => [d, i]));
+        const series = {}; const totalsByCategory = {};
+        for (const cat of categories) { series[cat] = dates.map(() => 0); totalsByCategory[cat] = 0; }
+        let grandTotal = 0;
+        for (const r of rows) { series[r.category][idx[r.date]] = r.amount; totalsByCategory[r.category] += r.amount; grandTotal += r.amount; }
+        for (const c of categories) totalsByCategory[c] = Number(totalsByCategory[c].toFixed(4));
+        res.json({ success: true, days, dates, categories, series, totalsByCategory, grandTotal: Number(grandTotal.toFixed(4)) });
+      } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+      }
+    });
+
     // --- Audience interaction (comments) ---
     // List the comment queue (default: pending review). ?status=all|pending|posted|skipped
     this.app.get('/comments', async (req, res) => {
@@ -538,6 +559,7 @@ class YouTubeAutomationAgent {
         }
 
         const result = await this.shortsProducer.produce(script, images);
+        await this._ledgerFolderCost(result.folder, 'short', path.join(__dirname, shortsConfig.outputDir));
         res.json({ success: true, folder: result.folder, title: script.title, moment: moment.title });
       } catch (error) {
         this.logger.error('Short generation failed:', error);
@@ -600,12 +622,29 @@ class YouTubeAutomationAgent {
         const result = await this.shortsProducer.produce(shortScript, images, {
           sourceThumb: require('fs').existsSync(srcThumb) ? srcThumb : null,
         });
+        await this._ledgerFolderCost(result.folder, 'short', path.join(__dirname, require('./utils/shorts-config').outputDir));
         res.json({ success: true, folder: result.folder, title: shortScript.title, source: folder });
       } catch (error) {
         this.logger.error('Short-from-existing failed:', error);
         res.status(500).json({ success: false, error: error.message });
       }
     });
+  }
+
+  // Record a generated folder's cost into the cost ledger (idempotent by folder
+  // ref). category: video|short|match_recap. Reads the cost from script.json.
+  async _ledgerFolderCost(folder, category, baseDir) {
+    try {
+      const fsp = require('fs').promises;
+      const scriptPath = path.join(baseDir, folder, 'script.json');
+      const s = JSON.parse(await fsp.readFile(scriptPath, 'utf8'));
+      const total = s.cost && typeof s.cost.total === 'number' ? s.cost.total : 0;
+      if (total > 0) {
+        await this.db.recordCost({ category, amount: total, detail: s.title || folder, ref: folder });
+      }
+    } catch (e) {
+      this.logger.warn(`Ledger record failed for ${folder}: ${e.message}`);
+    }
   }
 
   // Build the scoreboard overlay object for a normalized WC match, downloading
@@ -680,6 +719,7 @@ class YouTubeAutomationAgent {
         }
         const seo = this._buildMatchSeo(match, script, { isShort: true });
         const r = await this.shortsProducer.produce(script, images, { match: overlay, seo });
+        await this._ledgerFolderCost(r.folder, 'match_recap', path.join(__dirname, shortsConfig.outputDir));
         out.short = { folder: r.folder, title: script.title };
         this.logger.info(`Match Short created: ${r.folder}`);
       } catch (e) { this.logger.error(`Match Short failed: ${e.message}`); out.shortError = e.message; }
@@ -727,6 +767,7 @@ class YouTubeAutomationAgent {
           meta: { type: 'long', resolution: '1920x1080', durationSec: script.duration, matchRecap: true,
             models: { image: 'gpt-image-1', tts: gen.elevenLabsApiKey ? 'elevenlabs' : 'tts-1-hd' }, generatedAt: new Date().toISOString() } };
         await fsp.writeFile(path.join(folderPath, 'script.json'), JSON.stringify(scriptOut, null, 2));
+        await this._ledgerFolderCost(folder, 'match_recap', path.join(__dirname, 'output'));
         out.long = { folder, title: script.title };
         this.logger.info(`Match recap created: ${folder}`);
       } catch (e) { this.logger.error(`Match recap failed: ${e.message}`); out.longError = e.message; }
@@ -771,7 +812,14 @@ class YouTubeAutomationAgent {
     // Step 6: Save to database
     const contentId = await this.db.saveProductionData(productionData);
     this.logger.info(`Content saved with ID: ${contentId}`);
-    
+
+    // Record cost in the ledger (folder name is the basename of outputDir).
+    try {
+      if (productionData.outputDir) {
+        await this._ledgerFolderCost(path.basename(productionData.outputDir), 'video', path.join(__dirname, 'output'));
+      }
+    } catch (e) { this.logger.warn(`Long-video ledger record failed: ${e.message}`); }
+
     return {
       contentId,
       title: script.title,

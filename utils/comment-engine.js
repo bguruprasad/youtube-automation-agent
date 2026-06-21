@@ -108,6 +108,11 @@ class CommentEngine {
         ],
         temperature: 0.7, max_tokens: 200,
       });
+      // Track LLM token cost (gpt-4o-mini rates) so engagement spend is ledgered.
+      const u = resp.usage || {};
+      const inRate = 0.15 / 1e6, outRate = 0.60 / 1e6; // gpt-4o-mini USD/token
+      this._llmCost = (this._llmCost || 0) + (u.prompt_tokens || 0) * inRate + (u.completion_tokens || 0) * outRate;
+
       const txt = resp.choices[0].message.content.trim().replace(/^```json?\n?/i, '').replace(/\n?```$/i, '');
       const parsed = JSON.parse(txt);
       const cls = ['positive', 'question', 'spam', 'toxic', 'neutral'].includes(parsed.classification)
@@ -129,6 +134,7 @@ class CommentEngine {
   async ingest({ maxVideos = 15, maxPerRun = 40, dryRun = false } = {}) {
     const videos = this._ownVideos().slice(0, maxVideos);
     const results = { scannedVideos: videos.length, newComments: 0, byClass: {}, items: [] };
+    this._llmCost = 0; // accumulated by _analyze during this run
 
     for (const v of videos) {
       if (results.newComments >= maxPerRun) break;
@@ -157,6 +163,18 @@ class CommentEngine {
         }
         results.items.push({ ...c, videoTitle: v.title, classification, draftReply, status });
       }
+    }
+    // Ledger the engagement LLM cost for this run (one row/day, ref by date).
+    results.cost = Number((this._llmCost || 0).toFixed(5));
+    if (!dryRun && results.cost > 0 && this.db.recordCost) {
+      const today = new Date(); const p = n => String(n).padStart(2, '0');
+      const dateStr = `${today.getFullYear()}-${p(today.getMonth()+1)}-${p(today.getDate())}`;
+      // ref = engagement:<date>:<epoch-min> keeps runs distinct but groups daily.
+      await this.db.recordCost({
+        category: 'engagement', amount: results.cost,
+        detail: `${results.newComments} comments analyzed`,
+        ref: `engagement:${dateStr}:${Math.floor(Date.now()/60000)}`,
+      });
     }
     return results;
   }

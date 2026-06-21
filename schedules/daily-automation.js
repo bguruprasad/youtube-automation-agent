@@ -211,6 +211,11 @@ class DailyAutomation {
           }
 
           const result = await producer.produce(script, images);
+          // Ledger the cost (the app helper reads script.json; available via this.app).
+          if (this.app && this.app._ledgerFolderCost) {
+            const path = require('path');
+            await this.app._ledgerFolderCost(result.folder, 'short', path.join(__dirname, '..', shortsConfig.outputDir));
+          }
           made.push({ folder: result.folder, title: script.title });
         } catch (e) {
           this.logger.error(`Daily Short ${n + 1} failed: ${e.message}`);

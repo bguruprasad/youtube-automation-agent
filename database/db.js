@@ -194,6 +194,20 @@ class Database {
         created_at TEXT DEFAULT CURRENT_TIMESTAMP
       )`,
 
+      // Cost ledger: one row per billable spend event, for daily/category
+      // spend analytics. category: video|short|match_recap|engagement|other.
+      // ref is a stable identifier (e.g. output folder or comment id) used to
+      // avoid double-recording the same spend (see recordCost).
+      `CREATE TABLE IF NOT EXISTS cost_ledger (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        date TEXT NOT NULL,
+        category TEXT NOT NULL,
+        amount REAL NOT NULL DEFAULT 0,
+        detail TEXT,
+        ref TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+      )`,
+
       // Audience interaction: one row per YouTube comment the engine has seen.
       // comment_id is the YouTube top-level comment id (PRIMARY KEY = seen-guard).
       // classification: positive|question|spam|toxic|neutral
@@ -218,6 +232,13 @@ class Database {
     for (const tableQuery of tables) {
       await this.executeQuery(tableQuery);
     }
+
+    // Unique ref per category so the same spend can't be ledgered twice
+    // (backfill + live recording are both idempotent). NULL refs are allowed
+    // and not deduped (SQLite treats NULLs as distinct in UNIQUE indexes).
+    await this.executeQuery(
+      'CREATE UNIQUE INDEX IF NOT EXISTS idx_cost_ref ON cost_ledger(ref, category)'
+    ).catch(() => {});
 
     // Insert default settings
     await this.insertDefaultSettings();
@@ -604,6 +625,32 @@ class Database {
         }
       });
     });
+  }
+
+  // Record a spend event in the cost ledger. Idempotent when `ref` is given
+  // (INSERT OR IGNORE on the unique (ref, category) index), so backfills and
+  // retries don't double-count. `date` defaults to today (YYYY-MM-DD, local).
+  async recordCost({ category, amount, detail = null, ref = null, date = null }) {
+    if (!category || !(amount >= 0)) return { skipped: true };
+    const d = date || (() => { const t = new Date(); const p = n => String(n).padStart(2,'0');
+      return `${t.getFullYear()}-${p(t.getMonth()+1)}-${p(t.getDate())}`; })();
+    const sql = ref
+      ? 'INSERT OR IGNORE INTO cost_ledger (date, category, amount, detail, ref) VALUES (?,?,?,?,?)'
+      : 'INSERT INTO cost_ledger (date, category, amount, detail, ref) VALUES (?,?,?,?,NULL)';
+    const params = ref ? [d, category, amount, detail, ref] : [d, category, amount, detail];
+    return this.executeQuery(sql, params);
+  }
+
+  // Daily spend grouped by date + category, for the last N days (default 30).
+  // Returns rows: { date, category, amount }.
+  async getDailyCosts(days = 30) {
+    const since = new Date(Date.now() - days * 864e5);
+    const p = n => String(n).padStart(2,'0');
+    const sinceStr = `${since.getFullYear()}-${p(since.getMonth()+1)}-${p(since.getDate())}`;
+    return this.getAllRows(
+      `SELECT date, category, ROUND(SUM(amount),4) AS amount
+       FROM cost_ledger WHERE date >= ?
+       GROUP BY date, category ORDER BY date ASC`, [sinceStr]);
   }
 
   async close() {

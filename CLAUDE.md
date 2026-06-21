@@ -109,6 +109,12 @@ When you need to understand the docs or project content:
   is higher than the old "~$0.20–0.30/run" estimate above — that figure used a
   rougher $0.04/image; the meter uses real gpt-image-1 size×quality rates).
 
+### Cost ledger (admin spend analytics foundation)
+- `cost_ledger` DB table (date, category, amount, detail, ref) — a time-series of every billable spend, for daily/category graphs. categories: `video|short|match_recap|engagement`. **Idempotent**: unique index on `(ref, category)`; `db.recordCost({category,amount,detail,ref,date})` uses INSERT OR IGNORE so backfills/retries never double-count.
+- Wired from every generation site: long video (`generateContent`), `/generate-short`, `/short-from`, match recaps (`generateMatchVideos`), daily-shorts task — all via `app._ledgerFolderCost(folder, category, baseDir)` which reads the folder's `script.json` cost. Comment engine records `engagement` cost (gpt-4o-mini tokens) per ingest run.
+- `GET /costs/daily?days=30` returns raw rows + a pivoted series (`dates`, `categories`, `series{cat:[...]}`, `totalsByCategory`, `grandTotal`) ready for charting. **No dashboard UI yet** (admin graphs are a future task) — the data accrues now.
+- Backfill: `scripts/backfill-cost-ledger.js` seeds the ledger from existing folders' `script.json` cost blocks (dated by folder prefix). Idempotent. Applied: 36 rows, ~$8.34 historical.
+
 ### Video Assembly (in `utils/ai-video-generator.js`)
 - Output: 1920×1080, 30fps, with audio.
 - **Match-recap scoreboard mode**: pass `options.match = {homeTeam, awayTeam, homeScore, awayScore, homeCrest, awayCrest, label}` to `generateVideo/generateSlideshowVideo` → `_makeScoreboardOverlay()` renders a top scoreboard band (crests + big score + names + competition label) via sharp, composited over the AI scene like the normal title overlay. **Crests must be LOCAL image paths** (emoji flags don't render in sharp — `_countryFlag()` exists but is unused for this reason). Crests come from `utils/worldcup-provider.js`.
