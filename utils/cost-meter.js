@@ -40,6 +40,11 @@ class CostMeter {
     this._add('image', label, `${count}x ${size} ${quality}`, rate * count);
   }
 
+  // A generated image billed at a flat per-image rate (e.g. Replicate Flux).
+  recordFlatImage(rate, { count = 1, label = 'Image', provider = 'replicate', detail = '' } = {}) {
+    this._add('image', label, detail || `${count}x @ $${rate}`, rate * count, provider);
+  }
+
   // OpenAI TTS narration. chars = input length, model tts-1 | tts-1-hd.
   recordOpenAITTS(chars, model = 'tts-1-hd', { label = 'TTS narration' } = {}) {
     const rate = TTS_RATES[model] ?? TTS_RATES['tts-1-hd'];

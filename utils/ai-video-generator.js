@@ -211,8 +211,20 @@ class AIVideoGenerator {
     this.logger.info(`Generating ${count} visual assets with style: ${style}`);
 
     try {
-      if (!this.openai) {
+      if (!this.openai && !(this._imageProvider() === 'flux' && this.replicate)) {
         return await this.simulateVisualAssets(prompt, style, count);
+      }
+
+      // Alternative provider: Flux 1.1 Pro via Replicate (better photorealism +
+      // legible jersey text than gpt-image-1). Gated on IMAGE_PROVIDER=flux and a
+      // Replicate key. Falls back to gpt-image-1 below if Flux errors.
+      if (this._imageProvider() === 'flux' && this.replicate) {
+        try {
+          return await this._generateFluxAssets(prompt, style, imageOpts);
+        } catch (e) {
+          this.logger.warn(`Flux generation failed (${e.message}); falling back to gpt-image-1`);
+          if (!this.openai) return await this.simulateVisualAssets(prompt, style, count);
+        }
       }
 
       // Size/quality are overridable (Shorts use portrait + lower quality).
@@ -270,6 +282,58 @@ class AIVideoGenerator {
       this.logger.error('Visual asset generation failed:', error);
       return await this.simulateVisualAssets(prompt, style, count);
     }
+  }
+
+  // Which image provider to use: 'flux' (Replicate) or 'openai' (gpt-image-1).
+  // Defaults to openai. Set IMAGE_PROVIDER=flux to A/B the alternative.
+  _imageProvider() {
+    return (process.env.IMAGE_PROVIDER || 'openai').toLowerCase();
+  }
+
+  // Map a requested pixel size (e.g. "1024x1536" / "1536x1024") to the nearest
+  // Flux aspect_ratio token. Flux takes aspect_ratio, not arbitrary W×H.
+  _fluxAspectRatio(size) {
+    const m = /^(\d+)x(\d+)$/.exec(size || '');
+    if (!m) return '16:9';
+    const w = +m[1], h = +m[2];
+    return h > w ? '9:16' : (w > h ? '16:9' : '1:1');
+  }
+
+  // Generate scene images via Flux 1.1 Pro on Replicate. Returns saved PNG paths
+  // (same contract as the gpt-image-1 path). Throws on failure so the caller can
+  // fall back. Records a flat per-image cost (~$0.04) on the cost meter.
+  async _generateFluxAssets(prompt, style, imageOpts = {}) {
+    const model = process.env.FLUX_MODEL || 'black-forest-labs/flux-1.1-pro';
+    const aspect = this._fluxAspectRatio(imageOpts.size);
+    const fullPrompt = this.enhanceVisualPrompt(prompt, style);
+    this.logger.info(`Generating visual asset via Flux (${model}, ${aspect})`);
+
+    const output = await this.replicate.run(model, {
+      input: {
+        prompt: fullPrompt,
+        aspect_ratio: aspect,
+        output_format: 'png',
+        safety_tolerance: 2,
+        prompt_upsampling: true,
+      },
+    });
+
+    // Replicate returns a URL string, an array of URLs, or a FileOutput with .url().
+    let url = Array.isArray(output) ? output[0] : output;
+    if (url && typeof url.url === 'function') url = url.url();
+    url = String(url);
+    if (!/^https?:\/\//.test(url)) throw new Error(`Unexpected Flux output: ${url.slice(0, 80)}`);
+
+    const imagePath = path.join(__dirname, '..', 'data', 'assets', `visual_${Date.now()}_0.png`);
+    await fs.mkdir(path.dirname(imagePath), { recursive: true });
+    await this.downloadImage(url, imagePath);
+
+    if (this.costMeter) {
+      const rate = parseFloat(process.env.FLUX_IMAGE_RATE || '0.04');
+      this.costMeter.recordFlatImage(rate, { label: 'Scene image (Flux)', detail: `${aspect} ${model}` });
+    }
+    this.logger.info('Generated 1 visual asset (Flux)');
+    return [imagePath];
   }
 
   // Build a neutral, safety-system-friendly image prompt from a rejected one:
