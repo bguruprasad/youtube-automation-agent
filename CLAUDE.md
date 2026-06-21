@@ -112,7 +112,8 @@ When you need to understand the docs or project content:
 ### Cost ledger (admin spend analytics foundation)
 - `cost_ledger` DB table (date, category, amount, detail, ref) — a time-series of every billable spend, for daily/category graphs. categories: `video|short|match_recap|engagement`. **Idempotent**: unique index on `(ref, category)`; `db.recordCost({category,amount,detail,ref,date})` uses INSERT OR IGNORE so backfills/retries never double-count.
 - Wired from every generation site: long video (`generateContent`), `/generate-short`, `/short-from`, match recaps (`generateMatchVideos`), daily-shorts task — all via `app._ledgerFolderCost(folder, category, baseDir)` which reads the folder's `script.json` cost. Comment engine records `engagement` cost (gpt-4o-mini tokens) per ingest run.
-- `GET /costs/daily?days=30` returns raw rows + a pivoted series (`dates`, `categories`, `series{cat:[...]}`, `totalsByCategory`, `grandTotal`) ready for charting. **No dashboard UI yet** (admin graphs are a future task) — the data accrues now.
+- `GET /costs/daily?days=30` returns raw rows + a pivoted series (`dates`, `categories`, `series{cat:[...]}`, `totalsByCategory`, `grandTotal`) ready for charting.
+- **Dashboard 💰 Costs tab**: summary cards (total / last-7-days / per-category) + a **hand-rendered SVG stacked bar chart** (one bar/day, segments by category, hover tooltips) + legend + range selector (7/30/90d). NO external charting lib — inline SVG keeps the dashboard zero-dependency/offline-capable. `loadCosts()` in index.html.
 - Backfill: `scripts/backfill-cost-ledger.js` seeds the ledger from existing folders' `script.json` cost blocks (dated by folder prefix). Idempotent. Applied: 36 rows, ~$8.34 historical.
 
 ### Video Assembly (in `utils/ai-video-generator.js`)

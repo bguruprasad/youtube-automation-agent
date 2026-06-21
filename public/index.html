@@ -431,6 +431,12 @@
     .cls-badge.question { background: rgba(108,122,237,0.18); color: var(--accent); }
     .cls-badge.neutral { background: rgba(139,144,160,0.18); color: var(--text-dim); }
     .cls-badge.spam, .cls-badge.toxic { background: rgba(248,113,113,0.15); color: var(--red); }
+    /* Costs */
+    #costs-chart svg rect { transition: opacity 0.15s; }
+    #costs-chart svg rect:hover { opacity: 0.8; }
+    .cost-legend { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 12px; font-size: 0.82rem; color: var(--text-dim); }
+    .cost-legend span { display: flex; align-items: center; gap: 6px; text-transform: capitalize; }
+    .cost-legend i { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
     .strategy-list { margin: 0 0 0 18px; font-size: 0.88rem; }
     .strategy-list li { margin-bottom: 6px; line-height: 1.45; }
     .strategy-list.recs li { color: var(--text); }
@@ -464,6 +470,7 @@
       <button class="tab" data-tab="schedule" onclick="switchTab('schedule')">⚙️ Schedule</button>
       <button class="tab" data-tab="analytics" onclick="switchTab('analytics')">📊 Analytics</button>
       <button class="tab" data-tab="engagement" onclick="switchTab('engagement')">💬 Engagement</button>
+      <button class="tab" data-tab="costs" onclick="switchTab('costs')">💰 Costs</button>
     </div>
 
     <!-- ===== LONG VIDEOS TAB ===== -->
@@ -609,6 +616,26 @@
       </div>
     </div>
     </div><!-- /tab-engagement -->
+
+    <!-- ===== COSTS TAB ===== -->
+    <div class="tab-panel" id="tab-costs" style="display:none;">
+    <div class="section">
+      <div class="section-title" style="justify-content:space-between;">
+        <span>💰 Spend Over Time</span>
+        <span>
+          <select id="costs-range" class="short-privacy" onchange="loadCosts()">
+            <option value="7">Last 7 days</option>
+            <option value="30" selected>Last 30 days</option>
+            <option value="90">Last 90 days</option>
+          </select>
+          <button class="btn btn-sm btn-outline" onclick="loadCosts()">Refresh</button>
+        </span>
+      </div>
+      <div id="costs-summary"></div>
+      <div id="costs-chart"><div class="empty-state">Loading…</div></div>
+      <div id="costs-legend"></div>
+    </div>
+    </div><!-- /tab-costs -->
   </div>
 
   <!-- Info modal: generation details & cost -->
@@ -1555,6 +1582,69 @@
       } catch {}
     }
 
+    // --- Costs (daily spend chart, hand-rendered SVG; no external deps) ---
+    const COST_COLORS = { video:'#6c7aed', short:'#c084fc', match_recap:'#34d399', engagement:'#fbbf24', other:'#8b90a0' };
+    const costColor = (c) => COST_COLORS[c] || '#8b90a0';
+
+    async function loadCosts() {
+      const summary = document.getElementById('costs-summary');
+      const chart = document.getElementById('costs-chart');
+      const legend = document.getElementById('costs-legend');
+      chart.innerHTML = '<div class="spinner-wrap" style="margin-top:14px"><div class="spinner"></div><span>Loading spend…</span></div>';
+      summary.innerHTML = ''; legend.innerHTML = '';
+      try {
+        const days = document.getElementById('costs-range').value;
+        const res = await fetch('/costs/daily?days=' + days);
+        const d = await res.json();
+        if (!d.success) throw new Error(d.error || 'Failed');
+        if (!d.dates.length) { chart.innerHTML = '<div class="empty-state">No spend recorded in this range yet.</div>'; return; }
+
+        // Summary cards.
+        const weekTotal = (() => {
+          const cutoff = new Date(Date.now()-7*864e5).toISOString().slice(0,10);
+          let s=0; d.dates.forEach((dt,i)=>{ if(dt>=cutoff) d.categories.forEach(c=>s+=d.series[c][i]); }); return s;
+        })();
+        const catCards = d.categories.map(c =>
+          `<div class="stat-card"><div class="stat-num" style="color:${costColor(c)}">$${(d.totalsByCategory[c]||0).toFixed(2)}</div><div class="stat-lbl">${escHtml(c.replace('_',' '))}</div></div>`).join('');
+        summary.innerHTML = `<div class="stat-grid">
+          <div class="stat-card"><div class="stat-num">$${d.grandTotal.toFixed(2)}</div><div class="stat-lbl">Total (${days}d)</div></div>
+          <div class="stat-card"><div class="stat-num">$${weekTotal.toFixed(2)}</div><div class="stat-lbl">Last 7 days</div></div>
+          ${catCards}</div>`;
+
+        // Stacked bar chart (SVG). One bar per date, stacked by category.
+        const W=Math.max(d.dates.length*42, 320), H=300, padL=46, padB=46, padT=10;
+        const plotH=H-padB-padT, plotW=W-padL-4;
+        const dayTotals=d.dates.map((_,i)=>d.categories.reduce((s,c)=>s+d.series[c][i],0));
+        const maxV=Math.max(...dayTotals, 0.01);
+        const barW=Math.min(28, plotW/d.dates.length*0.7);
+        const stepX=plotW/d.dates.length;
+        // y gridlines (4)
+        let grid='';
+        for(let g=0;g<=4;g++){ const v=maxV*g/4; const y=padT+plotH-(plotH*g/4);
+          grid+=`<line x1="${padL}" y1="${y}" x2="${W}" y2="${y}" stroke="var(--border)" stroke-width="1"/>`+
+                `<text x="${padL-6}" y="${y+4}" text-anchor="end" font-size="10" fill="var(--text-dim)">$${v.toFixed(2)}</text>`; }
+        let bars='';
+        d.dates.forEach((dt,i)=>{
+          const cx=padL+stepX*i+stepX/2; let yCursor=padT+plotH;
+          d.categories.forEach(c=>{
+            const val=d.series[c][i]; if(val<=0) return;
+            const h=plotH*val/maxV; yCursor-=h;
+            bars+=`<rect x="${cx-barW/2}" y="${yCursor}" width="${barW}" height="${h}" fill="${costColor(c)}"><title>${dt} · ${c}: $${val.toFixed(4)}</title></rect>`;
+          });
+          // x label (show every Nth to avoid crowding)
+          const show=d.dates.length<=14||i%Math.ceil(d.dates.length/12)===0;
+          if(show) bars+=`<text x="${cx}" y="${H-padB+16}" text-anchor="middle" font-size="9" fill="var(--text-dim)">${dt.slice(5)}</text>`;
+        });
+        chart.innerHTML=`<div style="overflow-x:auto"><svg width="${W}" height="${H}" style="max-width:100%;min-width:${Math.min(W,600)}px">${grid}${bars}</svg></div>`;
+
+        // Legend.
+        legend.innerHTML='<div class="cost-legend">'+d.categories.map(c=>
+          `<span><i style="background:${costColor(c)}"></i>${escHtml(c.replace('_',' '))}</span>`).join('')+'</div>';
+      } catch (err) {
+        chart.innerHTML = `<div class="empty-state" style="color:var(--red)">Failed: ${escHtml(err.message)}</div>`;
+      }
+    }
+
     // --- Init ---
     function switchTab(name) {
       document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
@@ -1563,10 +1653,12 @@
       document.getElementById('tab-schedule').style.display = name === 'schedule' ? '' : 'none';
       document.getElementById('tab-analytics').style.display = name === 'analytics' ? '' : 'none';
       document.getElementById('tab-engagement').style.display = name === 'engagement' ? '' : 'none';
+      document.getElementById('tab-costs').style.display = name === 'costs' ? '' : 'none';
       if (name === 'shorts') loadShorts();
       if (name === 'schedule') loadAutomation();
       if (name === 'analytics') { loadMonetization(); loadVideoAnalytics(); }
       if (name === 'engagement') loadComments();
+      if (name === 'costs') loadCosts();
     }
 
     checkHealth();
