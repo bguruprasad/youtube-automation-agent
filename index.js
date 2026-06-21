@@ -555,6 +555,36 @@ class YouTubeAutomationAgent {
     };
   }
 
+  // Clean, relevant SEO for a match video. Short, valid tags (<=30 chars) built
+  // from the teams/competition — no generic "tutorial/for beginners" template.
+  // For Shorts, #Shorts leads the description (YouTube truncates after a trailing
+  // hashtag block).
+  _buildMatchSeo(match, script, { isShort = false } = {}) {
+    const comp = match.competition || 'FIFA World Cup';
+    const fixture = `${match.homeTeam} ${match.homeScore}-${match.awayScore} ${match.awayTeam}`;
+    const tags = [
+      match.homeTeam, match.awayTeam, 'World Cup', 'World Cup 2026',
+      comp, 'football', 'soccer', 'match recap', 'highlights',
+      `${match.homeTeam} vs ${match.awayTeam}`,
+    ].filter(Boolean)
+      .map(t => String(t).replace(/[<>":]/g, ' ').replace(/\s+/g, ' ').trim())
+      .filter(t => t && t.length <= 30)
+      .filter((t, i, a) => a.findIndex(x => x.toLowerCase() === t.toLowerCase()) === i)
+      .slice(0, 15);
+
+    const base = (script.hook && script.hook.text) ? script.hook.text : `${fixture} — ${comp} recap.`;
+    const description = isShort
+      ? `#Shorts #Football #Soccer\n\n${base}\n\n${fixture} | ${comp}`
+      : `${base}\n\n${fixture} | ${comp}\n\nAutomated match recap.`;
+
+    return {
+      title: (script.title || fixture).slice(0, 100),
+      description,
+      tags,
+      metadata: { category: 17, language: 'en' }, // 17 = Sports
+    };
+  }
+
   // Generate recap videos for one match: a long landscape recap and/or a short.
   // `formats` selects which (default both). Returns { long, short } folder info.
   // Does NOT upload — caller decides (scheduler auto-uploads unlisted).
@@ -579,7 +609,8 @@ class YouTubeAutomationAgent {
             { size: shortsConfig.imageSize, quality: shortsConfig.imageQuality });
           images.push(...a);
         }
-        const r = await this.shortsProducer.produce(script, images, { match: overlay });
+        const seo = this._buildMatchSeo(match, script, { isShort: true });
+        const r = await this.shortsProducer.produce(script, images, { match: overlay, seo });
         out.short = { folder: r.folder, title: script.title };
         this.logger.info(`Match Short created: ${r.folder}`);
       } catch (e) { this.logger.error(`Match Short failed: ${e.message}`); out.shortError = e.message; }
@@ -620,8 +651,9 @@ class YouTubeAutomationAgent {
         const videoPath = path.join(folderPath, 'video.mp4');
         await gen.generateVideo(script, images, audioPath, videoPath, { width: 1920, height: 1080, match: overlay });
 
-        // SEO + persist script.json with cost + meta (so /outputs + dashboard show it).
-        const seo = await this.agents.seoOptimizer.optimize(script, { topic: fixture, keywords: script.keywords }).catch(() => null);
+        // Clean match-specific SEO (NOT the generic optimizer, which emits junk
+        // long tags like "X tutorial / for beginners" that YouTube rejects).
+        const seo = this._buildMatchSeo(match, script, { isShort: false });
         const scriptOut = { ...script, seo, cost: gen.costMeter.summary(),
           meta: { type: 'long', resolution: '1920x1080', durationSec: script.duration, matchRecap: true,
             models: { image: 'gpt-image-1', tts: gen.elevenLabsApiKey ? 'elevenlabs' : 'tts-1-hd' }, generatedAt: new Date().toISOString() } };

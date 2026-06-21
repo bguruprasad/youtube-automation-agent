@@ -95,7 +95,7 @@ class ShortsProducer {
    * Produce a Short. `images` = absolute paths to source images (1+).
    * Returns { folder, folderPath, videoPath }.
    */
-  async produce(script, images, { sourceThumb = null, match = null } = {}) {
+  async produce(script, images, { sourceThumb = null, match = null, seo = null } = {}) {
     const W = shortsConfig.resolution.width;
     const H = shortsConfig.resolution.height;
     const { folderTimestamp } = require('./timestamp');
@@ -145,9 +145,10 @@ class ShortsProducer {
       }
     } catch (e) { this.logger.warn(`Short thumbnail failed: ${e.message}`); }
 
-    // 6. SEO + persist script.json (with seo embedded for the uploader).
-    const seo = await this.buildShortSeo(script);
-    const scriptOut = { ...script, seo, format: 'short' };
+    // 6. SEO + persist script.json (with seo embedded for the uploader). Prefer
+    // a caller-provided SEO (e.g. clean match-recap SEO); else build the default.
+    const finalSeo = seo || await this.buildShortSeo(script);
+    const scriptOut = { ...script, seo: finalSeo, format: 'short' };
 
     // Generation cost + metadata for the dashboard (i) info panel. The meter is
     // attached to the shared AIVideoGenerator by the /generate-short flow, so it

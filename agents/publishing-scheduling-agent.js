@@ -140,7 +140,10 @@ class PublishingSchedulingAgent {
       if (typeof raw !== 'string') continue;
       let t = raw.replace(/[<>"]/g, '').replace(/:/g, ' ').replace(/\s+/g, ' ').trim();
       if (!t) continue;
-      t = t.slice(0, 60);
+      // YouTube rejects overly long individual tags ("invalid video keywords").
+      // Keep each tag <= 30 chars; skip (don't truncate) ones that are longer so
+      // we never emit a mangled half-phrase.
+      if (t.length > 30) continue;
       const key = t.toLowerCase();
       if (seen.has(key)) continue;
       // +1 accounts for the comma YouTube counts between tags.
