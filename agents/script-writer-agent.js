@@ -316,6 +316,85 @@ Rules:
     };
   }
 
+  // Recap script for a real match. format 'long' => multi-section recap;
+  // 'short' => single punchy summary. `match` = normalized match object from
+  // worldcup-provider (homeTeam, awayTeam, homeScore, awayScore, stage, competition).
+  async generateMatchRecapScript(match, { format = 'long' } = {}) {
+    const isShort = format === 'short';
+    const fixture = `${match.homeTeam} ${match.homeScore}-${match.awayScore} ${match.awayTeam}`;
+    const ctx = `${match.competition || 'FIFA World Cup'}${match.stage ? ' (' + String(match.stage).replace(/_/g, ' ').toLowerCase() + ')' : ''}`;
+
+    const systemPrompt = `You are a football (soccer) match-recap scriptwriter for a YouTube channel. ` +
+      `Write an engaging, factual narration recapping a real match result. Output valid JSON only, no markdown. ` +
+      `Do NOT invent specific goalscorers, minutes, or events you can't be sure of — focus on the result, ` +
+      `the occasion, and the stakes. Keep it confident but not fabricated.`;
+
+    const userPrompt = isShort
+      ? `Write a YouTube Short narration recapping this match: ${fixture}. Competition: ${ctx}.
+Return JSON:
+{ "title": "punchy title <=70 chars incl. the score",
+  "hook": "1-sentence hook in the first 2 seconds",
+  "sections": [{"title":"<=6 word caption","content":"full narration","duration":50,"visuals":"visual direction"}],
+  "callToAction":"one short line" }
+Rules: TOTAL narration <= 150 words. Exactly ONE section. Factual about the result. ONLY the JSON.`
+      : `Write a YouTube match-recap narration for: ${fixture}. Competition: ${ctx}.
+Return JSON:
+{ "title": "compelling title <=80 chars incl. teams & score",
+  "hook": "strong opening line",
+  "sections": [
+    {"title":"The Build-Up","content":"...","duration":35,"visuals":"..."},
+    {"title":"The Match","content":"...","duration":50,"visuals":"..."},
+    {"title":"The Result","content":"...","duration":35,"visuals":"..."}
+  ],
+  "callToAction":"subscribe line" }
+Rules: 3 sections, ~250-350 words total. Factual about the ${fixture} result and what it means in the tournament. ONLY the JSON.`;
+
+    let ai = null;
+    const result = await this.generateWithAI(systemPrompt, userPrompt);
+    if (result) {
+      try { ai = JSON.parse(result.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim()); }
+      catch (e) { this.logger.error('Failed to parse match recap script:', e); }
+    }
+
+    // Fallback if AI unavailable/unparseable.
+    if (!ai) {
+      const base = `${fixture} in the ${ctx}.`;
+      ai = isShort
+        ? { title: `${fixture}`, hook: `${fixture} - here's how it went.`,
+            sections: [{ title: 'Full Time', content: `${base} A result the fans won't forget.`, duration: 50, visuals: 'football stadium' }],
+            callToAction: 'Follow for more World Cup recaps' }
+        : { title: `${fixture} | World Cup Recap`, hook: `${fixture}. Here's the story.`,
+            sections: [
+              { title: 'The Build-Up', content: `Two sides met in the ${ctx}.`, duration: 35, visuals: 'stadium atmosphere' },
+              { title: 'The Match', content: `${base}`, duration: 50, visuals: 'football action' },
+              { title: 'The Result', content: `Final score: ${fixture}.`, duration: 35, visuals: 'celebration' },
+            ],
+            callToAction: 'Subscribe for daily World Cup recaps' };
+    }
+
+    const sections = (ai.sections || []).map((s, i) => ({
+      type: 'ai-generated',
+      title: s.title || `Part ${i + 1}`,
+      content: s.content || '',
+      visuals: s.visuals ? [s.visuals] : ['football match'],
+      duration: Math.min(s.duration || (isShort ? 50 : 40), isShort ? 58 : 90),
+    }));
+    const totalDuration = sections.reduce((sum, s) => sum + s.duration, 0);
+
+    return {
+      title: (ai.title || fixture).slice(0, 100),
+      hook: { type: 'ai-generated', text: ai.hook || '', duration: '0:00-0:02' },
+      introduction: { greeting: '', topicIntro: '', valueProposition: '', credibility: '', duration: '' },
+      mainContent: { sections, totalDuration },
+      conclusion: { type: 'conclusion', title: '', recap: [], duration: '' },
+      callToAction: { type: 'call_to_action', subscribe: ai.callToAction || 'Subscribe for more', like: '', comment: '' },
+      duration: isShort ? Math.min(totalDuration, 58) : totalDuration,
+      keywords: [match.homeTeam, match.awayTeam, 'World Cup', 'football', 'soccer'].filter(Boolean),
+      format: isShort ? 'short' : 'long',
+      metadata: { matchRecap: true, matchId: match.id, fixture, createdAt: new Date().toISOString() },
+    };
+  }
+
   async generateTitle(strategy) {
     const templates = [
       `${strategy.angle}`,

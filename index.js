@@ -1,3 +1,4 @@
+require('dotenv').config(); // load .env (FOOTBALL_DATA_API_KEY, CHANNEL_*, SHORTS_*, etc.)
 const express = require('express');
 const path = require('path');
 const { Logger } = require('./utils/logger');
@@ -53,7 +54,7 @@ class YouTubeAutomationAgent {
       
       // Initialize scheduler
       this.logger.info('Setting up automation scheduler...');
-      this.scheduler = new DailyAutomation(this.agents, this.db);
+      this.scheduler = new DailyAutomation(this.agents, this.db, this);
       await this.scheduler.initialize();
       
       this.isInitialized = true;
@@ -475,6 +476,27 @@ class YouTubeAutomationAgent {
       }
     });
 
+    // Generate recap videos (long + short) for a World Cup match. Body (optional):
+    // { matchId, formats:['long','short'] }. If no matchId, uses the most recent
+    // finished WC match. Manual/testing counterpart to the scheduled task.
+    this.app.post('/generate-match', async (req, res) => {
+      try {
+        const wc = require('./utils/worldcup-provider');
+        const matchId = req.body && req.body.matchId;
+        const formats = (req.body && req.body.formats) || ['long', 'short'];
+        const matches = await wc.getFinishedMatches({ logger: this.logger });
+        if (!matches.length) return res.status(404).json({ success: false, error: 'No finished WC matches found (check FOOTBALL_DATA_API_KEY / date window).' });
+        const match = matchId ? matches.find(m => m.id === matchId) : matches[matches.length - 1];
+        if (!match) return res.status(404).json({ success: false, error: `Match ${matchId} not found.` });
+        this.logger.info(`Generating match videos: ${match.homeTeam} ${match.homeScore}-${match.awayScore} ${match.awayTeam}`);
+        const result = await this.generateMatchVideos(match, { formats });
+        res.json({ success: true, match: `${match.homeTeam} ${match.homeScore}-${match.awayScore} ${match.awayTeam}`, result });
+      } catch (error) {
+        this.logger.error('Match video generation failed:', error);
+        res.status(500).json({ success: false, error: error.message });
+      }
+    });
+
     // Mode B - Make a Short from an existing long-video output folder.
     this.app.post('/short-from/:folder', async (req, res) => {
       try {
@@ -515,6 +537,101 @@ class YouTubeAutomationAgent {
         res.status(500).json({ success: false, error: error.message });
       }
     });
+  }
+
+  // Build the scoreboard overlay object for a normalized WC match, downloading
+  // (cache-first) the team crests to local files sharp can composite.
+  async _buildMatchOverlay(match) {
+    const wc = require('./utils/worldcup-provider');
+    const [homeCrest, awayCrest] = await Promise.all([
+      wc.getCrest(match.homeCrestUrl).catch(() => null),
+      wc.getCrest(match.awayCrestUrl).catch(() => null),
+    ]);
+    return {
+      homeTeam: match.homeTeam, awayTeam: match.awayTeam,
+      homeScore: match.homeScore, awayScore: match.awayScore,
+      homeCrest, awayCrest,
+      label: `${match.competition || 'FIFA World Cup'}${match.stage ? ' · ' + String(match.stage).replace(/_/g, ' ') : ''}`,
+    };
+  }
+
+  // Generate recap videos for one match: a long landscape recap and/or a short.
+  // `formats` selects which (default both). Returns { long, short } folder info.
+  // Does NOT upload — caller decides (scheduler auto-uploads unlisted).
+  async generateMatchVideos(match, { formats = ['long', 'short'] } = {}) {
+    const { CostMeter } = require('./utils/cost-meter');
+    const shortsConfig = require('./utils/shorts-config');
+    const gen = this.agents.production.aiVideoGenerator;
+    const overlay = await this._buildMatchOverlay(match);
+    const fixture = `${match.homeTeam} ${match.homeScore}-${match.awayScore} ${match.awayTeam}`;
+    const visualPrompt = `Dramatic football (soccer) match scene, packed World Cup stadium, ` +
+      `players competing on the pitch, cinematic floodlights. Theme: ${fixture}. No text, no watermarks.`;
+    const out = {};
+
+    // ---- SHORT ----
+    if (formats.includes('short')) {
+      try {
+        gen.costMeter = new CostMeter();
+        const script = await this.agents.scriptWriter.generateMatchRecapScript(match, { format: 'short' });
+        const images = [];
+        for (let i = 0; i < shortsConfig.imageCount; i++) {
+          const a = await gen.generateVisualAssets(visualPrompt, 'cinematic', 1,
+            { size: shortsConfig.imageSize, quality: shortsConfig.imageQuality });
+          images.push(...a);
+        }
+        const r = await this.shortsProducer.produce(script, images, { match: overlay });
+        out.short = { folder: r.folder, title: script.title };
+        this.logger.info(`Match Short created: ${r.folder}`);
+      } catch (e) { this.logger.error(`Match Short failed: ${e.message}`); out.shortError = e.message; }
+    }
+
+    // ---- LONG RECAP ---- (landscape, scoreboard overlay)
+    if (formats.includes('long')) {
+      try {
+        gen.costMeter = new CostMeter();
+        const script = await this.agents.scriptWriter.generateMatchRecapScript(match, { format: 'long' });
+        const fsp = require('fs').promises;
+        const { folderTimestamp } = require('./utils/timestamp');
+        const slug = (script.title || fixture).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 50);
+        const folder = `${folderTimestamp()}_${slug}`;
+        const folderPath = path.join(__dirname, 'output', folder);
+        const assetsDir = path.join(folderPath, 'assets');
+        await fsp.mkdir(assetsDir, { recursive: true });
+
+        // One scene image per section.
+        const sections = script.mainContent.sections;
+        const images = [];
+        for (let i = 0; i < sections.length; i++) {
+          const a = await gen.generateVisualAssets(visualPrompt, 'cinematic', 1, { size: '1536x1024', quality: 'medium' });
+          for (let j = 0; j < a.length; j++) {
+            const dest = path.join(assetsDir, `visual_${images.length + 1}.png`);
+            await fsp.copyFile(a[j], dest); images.push(dest);
+          }
+        }
+
+        // TTS from the concatenated narration.
+        const ttsText = [script.hook?.text, ...sections.map(s => s.content)].filter(Boolean).join(' ');
+        await fsp.writeFile(path.join(folderPath, 'script_tts.txt'), ttsText);
+        const narrationPath = path.join(folderPath, 'narration.mp3');
+        let audioPath = null;
+        try { await gen.generateTTSAudio(ttsText, narrationPath); audioPath = narrationPath; }
+        catch (e) { this.logger.warn(`Recap TTS failed: ${e.message}`); }
+
+        const videoPath = path.join(folderPath, 'video.mp4');
+        await gen.generateVideo(script, images, audioPath, videoPath, { width: 1920, height: 1080, match: overlay });
+
+        // SEO + persist script.json with cost + meta (so /outputs + dashboard show it).
+        const seo = await this.agents.seoOptimizer.optimize(script, { topic: fixture, keywords: script.keywords }).catch(() => null);
+        const scriptOut = { ...script, seo, cost: gen.costMeter.summary(),
+          meta: { type: 'long', resolution: '1920x1080', durationSec: script.duration, matchRecap: true,
+            models: { image: 'gpt-image-1', tts: gen.elevenLabsApiKey ? 'elevenlabs' : 'tts-1-hd' }, generatedAt: new Date().toISOString() } };
+        await fsp.writeFile(path.join(folderPath, 'script.json'), JSON.stringify(scriptOut, null, 2));
+        out.long = { folder, title: script.title };
+        this.logger.info(`Match recap created: ${folder}`);
+      } catch (e) { this.logger.error(`Match recap failed: ${e.message}`); out.longError = e.message; }
+    }
+
+    return out;
   }
 
   async generateContent(topic = null, style = null, length = 'medium') {

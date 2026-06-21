@@ -95,7 +95,7 @@ class ShortsProducer {
    * Produce a Short. `images` = absolute paths to source images (1+).
    * Returns { folder, folderPath, videoPath }.
    */
-  async produce(script, images, { sourceThumb = null } = {}) {
+  async produce(script, images, { sourceThumb = null, match = null } = {}) {
     const W = shortsConfig.resolution.width;
     const H = shortsConfig.resolution.height;
     const { folderTimestamp } = require('./timestamp');
@@ -125,9 +125,10 @@ class ShortsProducer {
       this.logger.warn(`Short TTS failed (${e.message}); building silent short`);
     }
 
-    // 3. Assemble vertical video.
+    // 3. Assemble vertical video. `match` (optional) enables the scoreboard
+    // overlay for World Cup recap Shorts.
     const videoPath = path.join(folderPath, 'video.mp4');
-    await this.gen.generateVideo(script, verticalImages, audioPath, videoPath, { width: W, height: H });
+    await this.gen.generateVideo(script, verticalImages, audioPath, videoPath, { width: W, height: H, match });
 
     // 4. Captions (simple, from narration text & duration).
     try {

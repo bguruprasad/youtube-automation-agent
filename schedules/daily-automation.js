@@ -2,9 +2,10 @@ const cron = require('node-cron');
 const { Logger } = require('../utils/logger');
 
 class DailyAutomation {
-  constructor(agents, database) {
+  constructor(agents, database, app = null) {
     this.agents = agents;
     this.db = database;
+    this.app = app; // YouTubeAutomationAgent instance (for generateMatchVideos + uploads)
     this.logger = new Logger('DailyAutomation');
     this.scheduledTasks = new Map();
     this.isEnabled = true;
@@ -15,6 +16,7 @@ class DailyAutomation {
     this.taskMeta = {
       'daily-content-generation': { cron: '0 6 * * *', label: 'Daily content generation (long video)', run: () => this.runDailyContentGeneration() },
       'daily-shorts-generation': { cron: '0 7 * * *', label: 'Daily Shorts generation', run: () => this.runDailyShortsGeneration() },
+      'worldcup-match-videos': { cron: '0 8 * * *', label: 'World Cup match videos (recap + Short, auto-upload unlisted)', run: () => this.runWorldCupMatchVideos() },
       'publish-queue-processing': { cron: '*/15 * * * *', label: 'Publish queue processing', run: () => this.processPublishQueue() },
       'daily-analytics':          { cron: '0 9 * * *',  label: 'Daily analytics', run: () => this.collectDailyAnalytics() },
       'weekly-strategy-review':   { cron: '0 8 * * 0',  label: 'Weekly strategy review', run: () => this.weeklyStrategyReview() },
@@ -200,6 +202,68 @@ class DailyAutomation {
     } catch (error) {
       this.logger.error('Daily Shorts generation failed:', error);
       await this.logAutomationEvent('daily_shorts_generation', 'error', { error: error.message });
+    }
+  }
+
+  // For each NEW finished World Cup match (since last run), generate a long recap
+  // + a Short, then auto-upload both UNLISTED. A seen-guard (DB setting
+  // `wc_processed_match_ids`) ensures each match yields videos exactly once.
+  async runWorldCupMatchVideos() {
+    try {
+      if (!this.app || typeof this.app.generateMatchVideos !== 'function') {
+        this.logger.warn('WC task: app reference unavailable; skipping');
+        return;
+      }
+      const wc = require('../utils/worldcup-provider');
+      const matches = await wc.getFinishedMatches({ logger: this.logger });
+      if (!matches.length) { this.logger.info('WC task: no finished matches in window'); return; }
+
+      // Seen-guard.
+      let seen = [];
+      try { seen = JSON.parse(await this.db.getSetting('wc_processed_match_ids') || '[]'); } catch {}
+      const seenSet = new Set(seen);
+      const fresh = matches.filter(m => !seenSet.has(m.id));
+      if (!fresh.length) { this.logger.info('WC task: all finished matches already processed'); return; }
+
+      this.logger.info(`WC task: ${fresh.length} new match(es) to process`);
+      const privacy = (await this.db.getSetting('wc_upload_privacy')) || 'unlisted';
+      const made = [];
+
+      for (const match of fresh) {
+        try {
+          const result = await this.app.generateMatchVideos(match, { formats: ['long', 'short'] });
+
+          // Auto-upload both (best-effort) at the configured privacy.
+          if (result.long?.folder) {
+            try {
+              const fp = require('path').join(__dirname, '..', 'output', result.long.folder);
+              await this.agents.publishing.uploadOutputFolder(fp, { privacyStatus: privacy });
+            } catch (e) { this.logger.warn(`WC long upload failed: ${e.message}`); }
+          }
+          if (result.short?.folder) {
+            try {
+              const shortsConfig = require('../utils/shorts-config');
+              const fp = require('path').join(__dirname, '..', shortsConfig.outputDir, result.short.folder);
+              await this.agents.publishing.uploadOutputFolder(fp, { privacyStatus: privacy });
+            } catch (e) { this.logger.warn(`WC short upload failed: ${e.message}`); }
+          }
+
+          seenSet.add(match.id);
+          made.push({ id: match.id, fixture: `${match.homeTeam} ${match.homeScore}-${match.awayScore} ${match.awayTeam}`, ...result });
+        } catch (e) {
+          this.logger.error(`WC match ${match.id} failed: ${e.message}`);
+        }
+      }
+
+      // Persist the updated seen-set (cap to last 200 ids).
+      await this.db.setSetting('wc_processed_match_ids',
+        JSON.stringify(Array.from(seenSet).slice(-200)), 'Processed World Cup match IDs (seen-guard)');
+
+      this.logger.success(`WC task: processed ${made.length} match(es), uploaded ${privacy}`);
+      await this.logAutomationEvent('worldcup_match_videos', 'success', { processed: made.length, privacy, matches: made });
+    } catch (error) {
+      this.logger.error('WC match videos task failed:', error);
+      await this.logAutomationEvent('worldcup_match_videos', 'error', { error: error.message });
     }
   }
 

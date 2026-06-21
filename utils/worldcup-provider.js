@@ -93,7 +93,7 @@ async function getFinishedMatches({ from = null, to = null, logger = null } = {}
   if (!key) { if (logger) logger.warn('FOOTBALL_DATA_API_KEY not set; no WC matches'); return []; }
 
   const toD = to ? new Date(to) : new Date();
-  const fromD = from ? new Date(from) : new Date(toD.getTime() - 2 * 864e5); // 2-day window
+  const fromD = from ? new Date(from) : new Date(toD.getTime() - 3 * 864e5); // 3-day window
   const cacheKey = `${fmt(fromD)}_${fmt(toD)}`;
   if (_cache.key === cacheKey && Date.now() - _cache.at < CACHE_TTL_MS) {
     return _cache.data;
