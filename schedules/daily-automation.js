@@ -170,10 +170,29 @@ class DailyAutomation {
       const { ShortsProducer } = require('../utils/shorts-producer');
       const producer = new ShortsProducer(this.agents.production.aiVideoGenerator, this.logger);
 
+      // Dedup: don't repeat a moment used recently (within this run OR the last
+      // ~14 days). Persisted as a capped list of normalized titles.
+      const norm = (t) => String(t || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+      let recent = [];
+      try { recent = JSON.parse(await this.db.getSetting('recent_short_moments') || '[]'); } catch {}
+      const usedSet = new Set(recent.map(norm));
+      const persistRecent = async () =>
+        this.db.setSetting('recent_short_moments', JSON.stringify(recent.slice(-60)), 'Recently used Short moment titles (dedup)');
+
       const made = [];
       for (let n = 0; n < count; n++) {
         try {
-          const moment = await momentsProvider.getMoment({ logger: this.logger });
+          // Try a few times to land on a moment we haven't used recently.
+          let moment = null;
+          for (let attempt = 0; attempt < 6; attempt++) {
+            const cand = await momentsProvider.getMoment({ logger: this.logger });
+            if (!usedSet.has(norm(cand.title))) { moment = cand; break; }
+          }
+          if (!moment) { this.logger.info(`Daily Short ${n + 1}/${count}: no fresh moment available, skipping`); continue; }
+          usedSet.add(norm(moment.title));
+          recent.push(moment.title);
+          await persistRecent(); // persist before generating so a crash can't unmark it
+
           this.logger.info(`Daily Short ${n + 1}/${count}: ${moment.title}`);
           const script = await this.agents.scriptWriter.generateShortScript(moment);
 

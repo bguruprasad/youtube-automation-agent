@@ -776,7 +776,7 @@ class AnalyticsOptimizationAgent {
       try {
         for (let i = 0; i < videos.length; i += 50) {
           const ids = videos.slice(i, i + 50).map(v => v.videoId);
-          const resp = await this.youtube.videos.list({ part: 'snippet,statistics', id: ids.join(',') });
+          const resp = await this.youtube.videos.list({ part: 'snippet,statistics,status', id: ids.join(',') });
           for (const item of (resp.data.items || [])) {
             byId[item.id] = {
               title: item.snippet?.title,
@@ -784,8 +784,12 @@ class AnalyticsOptimizationAgent {
               views: parseInt(item.statistics?.viewCount) || 0,
               likes: parseInt(item.statistics?.likeCount) || 0,
               comments: parseInt(item.statistics?.commentCount) || 0,
+              privacy: item.status?.privacyStatus || null,
             };
           }
+          // A video ID we have a marker for but YouTube didn't return = deleted
+          // on YouTube. Mark it so the report can flag it.
+          for (const id of ids) if (!byId[id]) byId[id] = { deleted: true };
         }
       } catch (err) {
         this.logger.warn(`Live stats fetch failed (${err.message}); returning markers without stats`);
@@ -793,11 +797,30 @@ class AnalyticsOptimizationAgent {
     }
 
     const enriched = videos.map(v => {
-      const stats = byId[v.videoId] || null;
+      const live = byId[v.videoId] || null;
+      const deletedOnYouTube = !!(live && live.deleted);
+      const livePrivacy = live && !live.deleted ? live.privacy : null;
+
+      // Self-heal: if YouTube's current privacy differs from our stored marker,
+      // update the marker so the dashboard reflects reality (handles privacy
+      // changes made directly on YouTube).
+      if (livePrivacy && livePrivacy !== v.privacy) {
+        try {
+          const dir = path.join(root, v.kind === 'short' ? 'shorts' : '', v.folder);
+          const mp = path.join(dir, 'youtube_upload.json');
+          const m = JSON.parse(fs.readFileSync(mp, 'utf8'));
+          m.privacy = livePrivacy;
+          fs.writeFileSync(mp, JSON.stringify(m, null, 2));
+        } catch { /* best-effort */ }
+      }
+
+      const stats = live && !live.deleted ? live : null;
       return {
         ...v,
         title: stats?.title || v.title,
-        stats, // { views, likes, comments, publishedAt } or null
+        privacy: livePrivacy || v.privacy, // prefer live
+        deletedOnYouTube,
+        stats,
         costTotal: v.cost?.total ?? null,
       };
     }).sort((a, b) => (b.stats?.views || 0) - (a.stats?.views || 0));

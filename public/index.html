@@ -412,6 +412,11 @@
     .kind-badge { font-size: 0.74rem; white-space: nowrap; }
     .kind-badge.short { color: #c084fc; }
     .kind-badge.long { color: #58a6ff; }
+    .privacy-tag { font-size: 0.72rem; padding: 1px 8px; border-radius: 10px; font-weight: 600; text-transform: capitalize; }
+    .privacy-tag.public { background: rgba(52,211,153,0.15); color: var(--green); }
+    .privacy-tag.unlisted { background: rgba(251,191,36,0.15); color: var(--yellow); }
+    .privacy-tag.private { background: rgba(139,144,160,0.18); color: var(--text-dim); }
+    .privacy-tag.deleted { background: rgba(248,113,113,0.15); color: var(--red); }
     .strategy-list { margin: 0 0 0 18px; font-size: 0.88rem; }
     .strategy-list li { margin-bottom: 6px; line-height: 1.45; }
     .strategy-list.recs li { color: var(--text); }
@@ -1377,21 +1382,28 @@
             <div class="stat-card"><div class="stat-num">${t.costPerView!=null?'$'+t.costPerView.toFixed(4):'—'}</div><div class="stat-lbl">Cost / view</div></div>
           </div>${apiNote}`;
 
+        const privacyBadge = (v) => {
+          if (v.deletedOnYouTube) return '<span class="privacy-tag deleted">deleted</span>';
+          const p = v.privacy || '—';
+          return `<span class="privacy-tag ${p}">${p}</span>`;
+        };
         list.innerHTML = '<table class="analytics-table"><thead><tr>' +
-          '<th>Video</th><th>Type</th><th style="text-align:right">Views</th><th style="text-align:right">Likes</th>' +
+          '<th>Video</th><th>Type</th><th>Privacy</th><th style="text-align:right">Views</th><th style="text-align:right">Likes</th>' +
           '<th style="text-align:right">Comments</th><th style="text-align:right">Cost</th><th></th>' +
           '</tr></thead><tbody>' +
           data.videos.map(v => `
-            <tr>
+            <tr${v.deletedOnYouTube ? ' style="opacity:0.5"' : ''}>
               <td>${escHtml(v.title || v.folder)}</td>
               <td><span class="kind-badge ${v.kind}">${v.kind === 'short' ? '📱 Short' : '🎬 Long'}</span></td>
+              <td>${privacyBadge(v)}</td>
               <td style="text-align:right">${fmtNum(v.stats?.views)}</td>
               <td style="text-align:right">${fmtNum(v.stats?.likes)}</td>
               <td style="text-align:right">${fmtNum(v.stats?.comments)}</td>
               <td style="text-align:right">${v.costTotal!=null?'$'+v.costTotal.toFixed(3):'—'}</td>
               <td style="text-align:right"><a href="${escHtml(v.url||'#')}" target="_blank" class="btn btn-sm btn-outline">View</a></td>
             </tr>`).join('') +
-          '</tbody></table>';
+          '</tbody></table>' +
+          '<p class="info-note">Privacy is synced live from YouTube on refresh (changes made on YouTube show here).</p>';
       } catch (err) {
         list.innerHTML = `<div class="empty-state" style="color:var(--red)">Failed to load analytics: ${escHtml(err.message)}</div>`;
       }
