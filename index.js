@@ -751,7 +751,7 @@ class YouTubeAutomationAgent {
     const visualPrompt = gen.buildSceneImagePrompt(
       `${fixture} — ${match.competition || 'FIFA World Cup'}`,
       { teams: { home: match.homeTeam, away: match.awayTeam },
-        kits: { home: `${match.homeTeam} national team`, away: `${match.awayTeam} national team` } });
+        kits: { home: `${match.homeTeam}'s national team colours`, away: `${match.awayTeam}'s national team colours` } });
     const out = {};
 
     // ---- SHORT ----

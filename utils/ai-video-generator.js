@@ -291,17 +291,21 @@ class AIVideoGenerator {
 
   // Build a richer scene-image prompt for a football moment/match. Pulls in the
   // factual context (hint/narration) and the script's own visual direction so
-  // the image reflects what's actually being narrated — team, kit, opponent,
+  // the image reflects what's actually being narrated — team colours, opponent,
   // setting — instead of a generic stadium shot.
   //
-  // Deliberately does NOT try to render a specific real player's FACE: gpt-image-1
-  // won't reliably reproduce a real celebrity likeness (and it trips the safety
-  // filter), so when the moment is about a named player we frame the shot to
-  // avoid a face being the subject — action/wide/over-the-shoulder/from-behind,
-  // motion blur — so a wrong face is never the focal point. (TODO: a real-likeness
-  // image path is parked for later exploration.)
+  // Hard limits of gpt-image-1 we design AROUND (not against):
+  //  - It cannot render readable jersey TEXT (a player's name comes out garbled),
+  //    so we explicitly suppress all jersey text/numbers rather than rely on it
+  //    to convey identity.
+  //  - It cannot reproduce a specific real player's FACE, so we frame shots to
+  //    keep the face off-subject (action / from-behind / over-the-shoulder).
+  //  - It scatters colours unless told teammates share ONE kit, so we force a
+  //    single coherent kit colour per team and matching teammates.
+  // (TODO: a real-likeness / accurate-kit path is parked for a different model.)
   //
   // opts: { hint, sceneDirection, teams:{home,away}, kits:{home,away} }
+  //   kits.home/away are short colour descriptions, e.g. "red and white stripes".
   buildSceneImagePrompt(subject, opts = {}) {
     const { hint = '', sceneDirection = '', teams = null, kits = null } = opts;
     const parts = [];
@@ -314,15 +318,19 @@ class AIVideoGenerator {
     }
     if (kits && (kits.home || kits.away)) {
       const k = [];
-      if (kits.home) k.push(`one team in ${kits.home} kit`);
-      if (kits.away) k.push(`opponents in ${kits.away} kit`);
-      parts.push(`Accurate kits: ${k.join(', ')}.`);
+      if (kits.home) k.push(`the main team and ALL its teammates wear the SAME ${kits.home} kit`);
+      if (kits.away) k.push(`the opponents and all their teammates wear the SAME ${kits.away} kit`);
+      parts.push(`Team colours (keep each team's players in ONE consistent kit colour, do not mix colours within a team): ${k.join('; ')}.`);
+    } else {
+      parts.push('All players on the same team wear identical matching kit colours; do not mix kit colours within one team.');
     }
-    // Framing that avoids relying on a recognizable face (we can't render a real
-    // player's likeness): action shots, motion, distance, from behind.
+    // Framing that avoids the face (no real likeness) AND avoids jersey text
+    // (the model garbles names) — identity is carried by kit colour + action,
+    // not by a name on the shirt.
     parts.push(
-      'Frame as a dynamic action shot — player in motion mid-celebration or mid-play, ' +
-      'shot from a distance or from behind / over the shoulder, motion blur, faces turned away or not the focus. ' +
+      'Frame as a dynamic action shot — a player in motion mid-celebration or mid-play, ' +
+      'shot from a distance or from behind / over the shoulder, motion blur, face turned away or not the focus. ' +
+      'Plain kits with NO names, NO numbers, NO readable text of any kind on the jerseys. ' +
       'Packed stadium, cinematic floodlights. No text, no watermarks, no scoreboard graphics, ' +
       'no attempt to depict a specific real identifiable person\'s face.'
     );
