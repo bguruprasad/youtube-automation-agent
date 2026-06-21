@@ -405,6 +405,10 @@
     .stat-card { background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; }
     .stat-num { font-size: 1.5rem; font-weight: 700; color: var(--accent); }
     .stat-lbl { font-size: 0.78rem; color: var(--text-dim); margin-top: 2px; }
+    /* Cap the (growing) video list so it scrolls internally instead of pushing
+       the page down — keeps Strategy Review / Monetization reachable on top. */
+    .analytics-scroll { max-height: 460px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; }
+    .analytics-scroll .analytics-table th { position: sticky; top: 0; background: var(--surface); z-index: 1; }
     .analytics-table { width: 100%; border-collapse: collapse; font-size: 0.86rem; }
     .analytics-table th, .analytics-table td { padding: 8px 10px; border-bottom: 1px solid var(--border); text-align: left; }
     .analytics-table th { color: var(--text-dim); font-weight: 600; }
@@ -553,16 +557,6 @@
     </div>
     <div class="section">
       <div class="section-title" style="justify-content:space-between;">
-        <span>📊 Video Performance</span>
-        <button class="btn btn-sm btn-outline" onclick="loadVideoAnalytics()">Refresh</button>
-      </div>
-      <div id="analytics-summary"></div>
-      <div id="analytics-videos">
-        <div class="empty-state">Loading analytics…</div>
-      </div>
-    </div>
-    <div class="section">
-      <div class="section-title" style="justify-content:space-between;">
         <span>🧠 Strategy Review</span>
         <button class="btn btn-sm btn-green" id="strategy-gen-btn" onclick="generateStrategyReview()">Generate</button>
       </div>
@@ -571,6 +565,16 @@
       </p>
       <div id="strategy-review-body">
         <div class="empty-state">No review yet — click Generate.</div>
+      </div>
+    </div>
+    <div class="section">
+      <div class="section-title" style="justify-content:space-between;">
+        <span>📊 Video Performance</span>
+        <button class="btn btn-sm btn-outline" onclick="loadVideoAnalytics()">Refresh</button>
+      </div>
+      <div id="analytics-summary"></div>
+      <div id="analytics-videos" class="analytics-scroll">
+        <div class="empty-state">Loading analytics…</div>
       </div>
     </div>
     </div><!-- /tab-analytics -->
@@ -1375,6 +1379,7 @@
           '<p class="info-note" style="color:var(--yellow)">YouTube API not configured — live view/like counts unavailable; showing uploaded videos only.</p>';
         summary.innerHTML = `
           <div class="stat-grid">
+            <div class="stat-card"><div class="stat-num">${fmtNum(t.videos)}</div><div class="stat-lbl">Videos</div></div>
             <div class="stat-card"><div class="stat-num">${fmtNum(t.views)}</div><div class="stat-lbl">Total views</div></div>
             <div class="stat-card"><div class="stat-num">${fmtNum(t.likes)}</div><div class="stat-lbl">Likes</div></div>
             <div class="stat-card"><div class="stat-num">${fmtNum(t.comments)}</div><div class="stat-lbl">Comments</div></div>
