@@ -158,42 +158,20 @@ class YouTubeAutomationAgent {
       }
     });
 
-    // List previous generations
+    // List previous long-video generations. List comes from the generated_content
+    // index (DB = source of truth for what exists); each row is enriched from its
+    // folder (cost/meta/files/upload status). Long videos + match recaps live in
+    // longs/. Rows whose folder is gone on disk are skipped.
     this.app.get('/outputs', async (req, res) => {
       try {
-        const outputDir = outputRoot();
-        const fs = require('fs').promises;
-        const dirs = await fs.readdir(outputDir).catch(() => []);
+        const baseDir = outputRoot();
+        const rows = await this.db.getContent({});
+        const longRows = rows.filter(r => r.type === 'long' || r.type === 'match_recap');
         const outputs = [];
-        for (const dir of dirs) {
-          try {
-            const dirPath = path.join(outputDir, dir);
-            const scriptPath = path.join(dirPath, 'script.json');
-            const script = JSON.parse(await fs.readFile(scriptPath, 'utf8'));
-            const files = await fs.readdir(dirPath);
-            // Use the folder's modification time for true generation-order
-            // sorting (folder names only carry a date, not a time).
-            const stat = await fs.stat(dirPath);
-            // Has this folder already been uploaded to YouTube?
-            let uploaded = null;
-            if (files.includes('youtube_upload.json')) {
-              try { uploaded = JSON.parse(await fs.readFile(path.join(dirPath, 'youtube_upload.json'), 'utf8')); } catch {}
-            }
-            outputs.push({
-              folder: dir,
-              title: script.title,
-              files: files.filter(f => !f.startsWith('.')),
-              hasVideo: files.includes('video.mp4'),
-              hasThumbnail: files.includes('thumbnail.png'),
-              createdAt: script.createdAt || null,
-              modifiedAt: stat.mtimeMs,
-              uploaded, // { videoId, url, privacy, uploadedAt } or null
-              cost: script.cost || null, // { total, byType, items, ... } or null
-              meta: script.meta || null, // { resolution, durationSec, models, ... }
-            });
-          } catch { /* skip invalid dirs */ }
+        for (const r of longRows) {
+          const item = await this._enrichFolder(r.folder, baseDir);
+          if (item) outputs.push(item);
         }
-        // Newest first by actual mtime.
         outputs.sort((a, b) => b.modifiedAt - a.modifiedAt);
         res.json({ success: true, outputs });
       } catch (error) {
@@ -477,32 +455,22 @@ class YouTubeAutomationAgent {
       res.sendFile(path.join(shortsConfig.outputDir, folder, file));
     });
 
-    // List generated Shorts (output/shorts/).
+    // List generated Shorts. List from the generated_content index (type short
+    // or match_recap shorts live in shorts/); each enriched from its folder.
     this.app.get('/shorts', async (req, res) => {
       try {
         const shortsConfig = require('./utils/shorts-config');
-        const fsp = require('fs').promises;
-        const shortsDir = shortsConfig.outputDir;
-        const dirs = await fsp.readdir(shortsDir).catch(() => []);
+        const baseDir = shortsConfig.outputDir;
+        // Match recaps produce BOTH a long and a short; the short folder lives in
+        // shorts/. We can't tell from type alone which match_recap rows are the
+        // short side, so enrich every short-type row, and for match_recap rows
+        // try the shorts dir (enrich returns null if not present there).
+        const rows = await this.db.getContent({});
+        const candidates = rows.filter(r => r.type === 'short' || r.type === 'match_recap');
         const shorts = [];
-        for (const dir of dirs) {
-          try {
-            const dirPath = path.join(shortsDir, dir);
-            const script = JSON.parse(await fsp.readFile(path.join(dirPath, 'script.json'), 'utf8'));
-            const files = await fsp.readdir(dirPath);
-            const stat = await fsp.stat(dirPath);
-            let uploaded = null;
-            if (files.includes('youtube_upload.json')) {
-              try { uploaded = JSON.parse(await fsp.readFile(path.join(dirPath, 'youtube_upload.json'), 'utf8')); } catch {}
-            }
-            shorts.push({
-              folder: dir, title: script.title,
-              hasVideo: files.includes('video.mp4'),
-              modifiedAt: stat.mtimeMs, uploaded,
-              cost: script.cost || null,
-              meta: script.meta || null,
-            });
-          } catch {}
+        for (const r of candidates) {
+          const item = await this._enrichFolder(r.folder, baseDir);
+          if (item) shorts.push(item);
         }
         shorts.sort((a, b) => b.modifiedAt - a.modifiedAt);
         res.json({ success: true, shorts });
@@ -561,6 +529,7 @@ class YouTubeAutomationAgent {
 
         const result = await this.shortsProducer.produce(script, images);
         await this._ledgerFolderCost(result.folder, 'short', shortsConfig.outputDir);
+        await this.db.upsertContent({ folder: result.folder, type: 'short', title: script.title });
         res.json({ success: true, folder: result.folder, title: script.title, moment: moment.title });
       } catch (error) {
         this.logger.error('Short generation failed:', error);
@@ -624,6 +593,7 @@ class YouTubeAutomationAgent {
           sourceThumb: require('fs').existsSync(srcThumb) ? srcThumb : null,
         });
         await this._ledgerFolderCost(result.folder, 'short', require('./utils/shorts-config').outputDir);
+        await this.db.upsertContent({ folder: result.folder, type: 'short', title: shortScript.title });
         res.json({ success: true, folder: result.folder, title: shortScript.title, source: folder });
       } catch (error) {
         this.logger.error('Short-from-existing failed:', error);
@@ -634,6 +604,37 @@ class YouTubeAutomationAgent {
 
   // Record a generated folder's cost into the cost ledger (idempotent by folder
   // ref). category: video|short|match_recap. Reads the cost from script.json.
+  // Enrich one content row from its folder on disk (cost/meta/files/upload
+  // status). Returns the dashboard item object, or null if the folder is gone
+  // (deleted manually) so the caller can skip it. `baseDir` is longs/ or shorts/.
+  async _enrichFolder(folder, baseDir) {
+    const fsp = require('fs').promises;
+    const dirPath = path.join(baseDir, folder);
+    try {
+      const script = JSON.parse(await fsp.readFile(path.join(dirPath, 'script.json'), 'utf8'));
+      const files = await fsp.readdir(dirPath);
+      const stat = await fsp.stat(dirPath);
+      let uploaded = null;
+      if (files.includes('youtube_upload.json')) {
+        try { uploaded = JSON.parse(await fsp.readFile(path.join(dirPath, 'youtube_upload.json'), 'utf8')); } catch {}
+      }
+      return {
+        folder,
+        title: script.title,
+        files: files.filter(f => !f.startsWith('.')),
+        hasVideo: files.includes('video.mp4'),
+        hasThumbnail: files.includes('thumbnail.png'),
+        createdAt: script.createdAt || null,
+        modifiedAt: stat.mtimeMs,
+        uploaded,
+        cost: script.cost || null,
+        meta: script.meta || null,
+      };
+    } catch {
+      return null; // folder missing/unreadable — skip
+    }
+  }
+
   async _ledgerFolderCost(folder, category, baseDir) {
     try {
       const fsp = require('fs').promises;
@@ -721,6 +722,7 @@ class YouTubeAutomationAgent {
         const seo = this._buildMatchSeo(match, script, { isShort: true });
         const r = await this.shortsProducer.produce(script, images, { match: overlay, seo });
         await this._ledgerFolderCost(r.folder, 'match_recap', shortsConfig.outputDir);
+        await this.db.upsertContent({ folder: r.folder, type: 'match_recap', title: script.title });
         out.short = { folder: r.folder, title: script.title };
         this.logger.info(`Match Short created: ${r.folder}`);
       } catch (e) { this.logger.error(`Match Short failed: ${e.message}`); out.shortError = e.message; }
@@ -769,6 +771,7 @@ class YouTubeAutomationAgent {
             models: { image: 'gpt-image-1', tts: gen.elevenLabsApiKey ? 'elevenlabs' : 'tts-1-hd' }, generatedAt: new Date().toISOString() } };
         await fsp.writeFile(path.join(folderPath, 'script.json'), JSON.stringify(scriptOut, null, 2));
         await this._ledgerFolderCost(folder, 'match_recap', outputRoot());
+        await this.db.upsertContent({ folder, type: 'match_recap', title: script.title });
         out.long = { folder, title: script.title };
         this.logger.info(`Match recap created: ${folder}`);
       } catch (e) { this.logger.error(`Match recap failed: ${e.message}`); out.longError = e.message; }
@@ -814,10 +817,12 @@ class YouTubeAutomationAgent {
     const contentId = await this.db.saveProductionData(productionData);
     this.logger.info(`Content saved with ID: ${contentId}`);
 
-    // Record cost in the ledger (folder name is the basename of outputDir).
+    // Record cost in the ledger + content index (folder = basename of outputDir).
     try {
       if (productionData.outputDir) {
-        await this._ledgerFolderCost(path.basename(productionData.outputDir), 'video', outputRoot());
+        const folderName = path.basename(productionData.outputDir);
+        await this._ledgerFolderCost(folderName, 'video', outputRoot());
+        await this.db.upsertContent({ folder: folderName, type: 'long', title: script.title });
       }
     } catch (e) { this.logger.warn(`Long-video ledger record failed: ${e.message}`); }
 

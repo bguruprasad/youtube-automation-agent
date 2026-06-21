@@ -226,6 +226,18 @@ class Database {
         published_at TEXT,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP,
         updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+      )`,
+
+      // Generated content INDEX (source of truth for WHICH videos/shorts exist).
+      // Deliberately minimal: per-item cost/meta/files/upload-status are NOT
+      // duplicated here — they're enriched from the folder at read time, so this
+      // table never drifts. `folder` is the run folder NAME (move-proof; not an
+      // absolute path). type: long | short | match_recap.
+      `CREATE TABLE IF NOT EXISTS generated_content (
+        folder TEXT PRIMARY KEY,
+        type TEXT NOT NULL,
+        title TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
       )`
     ];
 
@@ -639,6 +651,30 @@ class Database {
       : 'INSERT INTO cost_ledger (date, category, amount, detail, ref) VALUES (?,?,?,?,NULL)';
     const params = ref ? [d, category, amount, detail, ref] : [d, category, amount, detail];
     return this.executeQuery(sql, params);
+  }
+
+  // --- Generated content index ---
+  // Idempotent: insert a content row, or update title/type if the folder is
+  // already indexed. `folder` is the run folder name (move-proof).
+  async upsertContent({ folder, type, title = null }) {
+    if (!folder || !type) return { skipped: true };
+    return this.executeQuery(
+      `INSERT INTO generated_content (folder, type, title)
+       VALUES (?,?,?)
+       ON CONFLICT(folder) DO UPDATE SET title=excluded.title, type=excluded.type`,
+      [folder, type, title]
+    );
+  }
+
+  // List indexed content, newest first. Optional type filter
+  // ('long' | 'short' | 'match_recap'). Returns [{folder,type,title,created_at}].
+  async getContent({ type = null } = {}) {
+    const where = type ? 'WHERE type = ?' : '';
+    const params = type ? [type] : [];
+    return this.getAllRows(
+      `SELECT folder, type, title, created_at FROM generated_content ${where} ORDER BY created_at DESC`,
+      params
+    );
   }
 
   // Daily spend grouped by date + category, for the last N days (default 30).
