@@ -421,6 +421,16 @@
     .privacy-tag.unlisted { background: rgba(251,191,36,0.15); color: var(--yellow); }
     .privacy-tag.private { background: rgba(139,144,160,0.18); color: var(--text-dim); }
     .privacy-tag.deleted { background: rgba(248,113,113,0.15); color: var(--red); }
+    /* Engagement / comments */
+    .comment-card { background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 14px; margin-bottom: 12px; }
+    .comment-meta { display: flex; align-items: center; gap: 8px; font-size: 0.85rem; margin-bottom: 6px; flex-wrap: wrap; }
+    .comment-text { font-size: 0.9rem; margin-bottom: 10px; color: var(--text); }
+    .comment-reply { width: 100%; background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 8px; font-size: 0.88rem; resize: vertical; margin-bottom: 8px; font-family: inherit; }
+    .cls-badge { font-size: 0.72rem; padding: 1px 8px; border-radius: 10px; font-weight: 600; text-transform: capitalize; }
+    .cls-badge.positive { background: rgba(52,211,153,0.15); color: var(--green); }
+    .cls-badge.question { background: rgba(108,122,237,0.18); color: var(--accent); }
+    .cls-badge.neutral { background: rgba(139,144,160,0.18); color: var(--text-dim); }
+    .cls-badge.spam, .cls-badge.toxic { background: rgba(248,113,113,0.15); color: var(--red); }
     .strategy-list { margin: 0 0 0 18px; font-size: 0.88rem; }
     .strategy-list li { margin-bottom: 6px; line-height: 1.45; }
     .strategy-list.recs li { color: var(--text); }
@@ -453,6 +463,7 @@
       <button class="tab" data-tab="shorts" onclick="switchTab('shorts')">📱 Shorts</button>
       <button class="tab" data-tab="schedule" onclick="switchTab('schedule')">⚙️ Schedule</button>
       <button class="tab" data-tab="analytics" onclick="switchTab('analytics')">📊 Analytics</button>
+      <button class="tab" data-tab="engagement" onclick="switchTab('engagement')">💬 Engagement</button>
     </div>
 
     <!-- ===== LONG VIDEOS TAB ===== -->
@@ -578,6 +589,26 @@
       </div>
     </div>
     </div><!-- /tab-analytics -->
+
+    <!-- ===== ENGAGEMENT TAB ===== -->
+    <div class="tab-panel" id="tab-engagement" style="display:none;">
+    <div class="section">
+      <div class="section-title" style="justify-content:space-between;">
+        <span>💬 Comment Review Queue</span>
+        <span>
+          <button class="btn btn-sm" id="comment-ingest-btn" onclick="ingestComments()">🔄 Scan for new comments</button>
+          <button class="btn btn-sm btn-outline" onclick="loadComments()">Refresh</button>
+        </span>
+      </div>
+      <p class="info-note" style="margin-top:0;margin-bottom:10px;">
+        Drafts friendly, factual replies to new comments on your videos. Review &amp; approve below — nothing posts until you click Post.
+        Spam/toxic comments are auto-skipped. (YouTube's API has no heart/pin endpoint, so those stay manual.)
+      </p>
+      <div id="comments-body">
+        <div class="empty-state">Loading…</div>
+      </div>
+    </div>
+    </div><!-- /tab-engagement -->
   </div>
 
   <!-- Info modal: generation details & cost -->
@@ -1173,6 +1204,7 @@
       '0 8 * * *': 'Daily at 8:00 AM',
       '*/15 * * * *': 'Every 15 minutes',
       '*/30 * * * *': 'Every 30 minutes',
+      '0 */2 * * *': 'Every 2 hours',
       '0 9 * * *': 'Daily at 9:00 AM',
       '0 8 * * 0': 'Sundays at 8:00 AM',
       '0 22 * * *': 'Daily at 10:00 PM',
@@ -1454,6 +1486,75 @@
       }
     }
 
+    // --- Engagement (comment review queue) ---
+    async function loadComments() {
+      const body = document.getElementById('comments-body');
+      try {
+        const res = await fetch('/comments?status=pending');
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || 'Failed');
+        const counts = {}; (data.counts||[]).forEach(c => counts[c.status] = c.n);
+        const countLine = `<p class="info-note" style="margin-top:0">Pending: ${counts.pending||0} · Posted: ${counts.posted||0} · Skipped: ${counts.skipped||0}</p>`;
+        if (!data.comments.length) { body.innerHTML = countLine + '<div class="empty-state">No pending comments. Click "Scan for new comments".</div>'; return; }
+        body.innerHTML = countLine + data.comments.map(c => `
+          <div class="comment-card" data-id="${escAttr(c.comment_id)}">
+            <div class="comment-meta">
+              <span class="cls-badge ${escHtml(c.classification)}">${escHtml(c.classification)}</span>
+              <strong>${escHtml(c.author||'')}</strong>
+              <span style="color:var(--text-dim)">on ${escHtml((c.video_title||'').slice(0,50))}</span>
+            </div>
+            <div class="comment-text">${escHtml(c.text||'')}</div>
+            <textarea class="comment-reply" rows="2" placeholder="Reply…">${escHtml(c.draft_reply||'')}</textarea>
+            <div class="output-actions">
+              <button class="btn btn-sm btn-green" onclick="postComment(this)">✓ Post reply</button>
+              <button class="btn btn-sm btn-outline" onclick="skipComment(this)">Skip</button>
+              <span class="comment-status" style="font-size:0.8rem;"></span>
+            </div>
+          </div>`).join('');
+      } catch (err) {
+        body.innerHTML = `<div class="empty-state" style="color:var(--red)">Failed: ${escHtml(err.message)}</div>`;
+      }
+    }
+
+    async function ingestComments() {
+      const btn = document.getElementById('comment-ingest-btn');
+      btn.disabled = true; const o = btn.textContent; btn.textContent = '⏳ Scanning…';
+      try {
+        const res = await fetch('/comments/ingest', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || 'Failed');
+        loadComments();
+      } catch (err) { alert('Scan failed: ' + err.message); }
+      finally { btn.disabled = false; btn.textContent = o; }
+    }
+
+    async function postComment(btn) {
+      const card = btn.closest('.comment-card');
+      const id = card.dataset.id;
+      const text = card.querySelector('.comment-reply').value.trim();
+      const statusEl = card.querySelector('.comment-status');
+      if (!text) { statusEl.style.color='var(--red)'; statusEl.textContent='Reply is empty'; return; }
+      if (!confirm('Post this reply to YouTube?')) return;
+      btn.disabled = true;
+      try {
+        const res = await fetch('/comments/' + encodeURIComponent(id) + '/post', {
+          method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ text }) });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || 'Failed');
+        statusEl.style.color='var(--green)'; statusEl.textContent='✅ Posted';
+        setTimeout(loadComments, 800);
+      } catch (err) { statusEl.style.color='var(--red)'; statusEl.textContent='❌ '+err.message; btn.disabled=false; }
+    }
+
+    async function skipComment(btn) {
+      const card = btn.closest('.comment-card');
+      const id = card.dataset.id;
+      try {
+        await fetch('/comments/' + encodeURIComponent(id) + '/skip', { method: 'POST' });
+        loadComments();
+      } catch {}
+    }
+
     // --- Init ---
     function switchTab(name) {
       document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
@@ -1461,9 +1562,11 @@
       document.getElementById('tab-shorts').style.display = name === 'shorts' ? '' : 'none';
       document.getElementById('tab-schedule').style.display = name === 'schedule' ? '' : 'none';
       document.getElementById('tab-analytics').style.display = name === 'analytics' ? '' : 'none';
+      document.getElementById('tab-engagement').style.display = name === 'engagement' ? '' : 'none';
       if (name === 'shorts') loadShorts();
       if (name === 'schedule') loadAutomation();
       if (name === 'analytics') { loadMonetization(); loadVideoAnalytics(); }
+      if (name === 'engagement') loadComments();
     }
 
     checkHealth();

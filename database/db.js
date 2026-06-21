@@ -192,6 +192,26 @@ class Database {
         status TEXT NOT NULL,
         data TEXT,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP
+      )`,
+
+      // Audience interaction: one row per YouTube comment the engine has seen.
+      // comment_id is the YouTube top-level comment id (PRIMARY KEY = seen-guard).
+      // classification: positive|question|spam|toxic|neutral
+      // status: pending (drafted, awaiting review) | approved | posted | skipped | hearted
+      `CREATE TABLE IF NOT EXISTS comment_queue (
+        comment_id TEXT PRIMARY KEY,
+        video_id TEXT NOT NULL,
+        video_title TEXT,
+        author TEXT,
+        text TEXT,
+        classification TEXT,
+        draft_reply TEXT,
+        status TEXT DEFAULT 'pending',
+        hearted INTEGER DEFAULT 0,
+        reply_id TEXT,
+        published_at TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
       )`
     ];
 

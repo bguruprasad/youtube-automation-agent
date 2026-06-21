@@ -87,6 +87,22 @@ class YouTubeAutomationAgent {
     // Shorts producer (reuses the production agent's AIVideoGenerator).
     const { ShortsProducer } = require('./utils/shorts-producer');
     this.shortsProducer = new ShortsProducer(this.agents.production.aiVideoGenerator, this.logger);
+
+    // Audience interaction engine (comment replies). Uses the YouTube client +
+    // OpenAI. Tolerates missing YouTube creds (endpoints will report it).
+    try {
+      const { CommentEngine } = require('./utils/comment-engine');
+      const yt = (() => { try { return this.credentials.getYouTubeClient(); } catch { return null; } })();
+      this.commentEngine = new CommentEngine({
+        youtube: yt,
+        openai: this.agents.strategy.openai || null,
+        db: this.db,
+        logger: this.logger,
+      });
+    } catch (e) {
+      this.logger.warn(`Comment engine not initialized: ${e.message}`);
+      this.commentEngine = null;
+    }
   }
 
   setupAPI() {
@@ -210,6 +226,59 @@ class YouTubeAutomationAgent {
       try {
         const status = await this.agents.analytics.getMonetizationStatus();
         res.json({ success: true, status });
+      } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+      }
+    });
+
+    // --- Audience interaction (comments) ---
+    // List the comment queue (default: pending review). ?status=all|pending|posted|skipped
+    this.app.get('/comments', async (req, res) => {
+      try {
+        const status = req.query.status || 'pending';
+        const where = status === 'all' ? '' : 'WHERE status = ?';
+        const params = status === 'all' ? [] : [status];
+        const rows = await this.db.getAllRows(
+          `SELECT * FROM comment_queue ${where} ORDER BY created_at DESC LIMIT 200`, params);
+        const counts = await this.db.getAllRows('SELECT status, COUNT(*) n FROM comment_queue GROUP BY status');
+        res.json({ success: true, comments: rows, counts });
+      } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+      }
+    });
+
+    // Scan own videos for new comments, classify + draft into the queue.
+    this.app.post('/comments/ingest', async (req, res) => {
+      try {
+        if (!this.commentEngine || !this.commentEngine.youtube) throw new Error('Comment engine/YouTube not configured');
+        const result = await this.commentEngine.ingest({
+          maxVideos: parseInt(req.body?.maxVideos) || 15,
+          maxPerRun: parseInt(req.body?.maxPerRun) || 40,
+        });
+        res.json({ success: true, result });
+      } catch (error) {
+        this.logger.error('Comment ingest failed:', error);
+        res.status(500).json({ success: false, error: error.message });
+      }
+    });
+
+    // Approve + post a queued reply (optional edited text in body.text).
+    this.app.post('/comments/:id/post', async (req, res) => {
+      try {
+        if (!this.commentEngine || !this.commentEngine.youtube) throw new Error('Comment engine/YouTube not configured');
+        const result = await this.commentEngine.postQueued(req.params.id, req.body?.text ?? null);
+        res.json({ success: true, ...result });
+      } catch (error) {
+        this.logger.error('Comment reply failed:', error);
+        res.status(500).json({ success: false, error: error.message });
+      }
+    });
+
+    // Skip a queued comment (won't reply).
+    this.app.post('/comments/:id/skip', async (req, res) => {
+      try {
+        const result = await this.commentEngine.skipQueued(req.params.id);
+        res.json({ success: true, ...result });
       } catch (error) {
         res.status(500).json({ success: false, error: error.message });
       }

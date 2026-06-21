@@ -17,6 +17,7 @@ class DailyAutomation {
       'daily-content-generation': { cron: '0 6 * * *', label: 'Daily content generation (long video)', run: () => this.runDailyContentGeneration() },
       'daily-shorts-generation': { cron: '0 7 * * *', label: 'Daily Shorts generation', run: () => this.runDailyShortsGeneration() },
       'worldcup-match-videos': { cron: '*/30 * * * *', label: 'World Cup match videos (polls every 30 min; recap + Short ~30 min after full-time, auto-upload unlisted)', run: () => this.runWorldCupMatchVideos() },
+      'comment-engagement': { cron: '0 */2 * * *', label: 'Comment engagement (drafts replies to new comments into the review queue every 2h)', run: () => this.runCommentEngagement() },
       'publish-queue-processing': { cron: '*/15 * * * *', label: 'Publish queue processing', run: () => this.processPublishQueue() },
       'daily-analytics':          { cron: '0 9 * * *',  label: 'Daily analytics', run: () => this.collectDailyAnalytics() },
       'weekly-strategy-review':   { cron: '0 8 * * 0',  label: 'Weekly strategy review', run: () => this.weeklyStrategyReview() },
@@ -284,6 +285,23 @@ class DailyAutomation {
     } catch (error) {
       this.logger.error('WC match videos task failed:', error);
       await this.logAutomationEvent('worldcup_match_videos', 'error', { error: error.message });
+    }
+  }
+
+  // Scan own videos for new comments, classify + draft replies into the review
+  // queue. Does NOT auto-post — replies are reviewed/approved in the dashboard
+  // (review-first model). Spam/toxic are skipped, never engaged.
+  async runCommentEngagement() {
+    try {
+      const eng = this.app && this.app.commentEngine;
+      if (!eng || !eng.youtube) { this.logger.warn('Comment engagement: engine/YouTube not available'); return; }
+      this.logger.info('Comment engagement: scanning for new comments...');
+      const r = await eng.ingest({ maxVideos: 20, maxPerRun: 50 });
+      this.logger.success(`Comment engagement: ${r.newComments} new across ${r.scannedVideos} videos ${JSON.stringify(r.byClass)}`);
+      await this.logAutomationEvent('comment_engagement', 'success', { newComments: r.newComments, byClass: r.byClass });
+    } catch (error) {
+      this.logger.error('Comment engagement failed:', error);
+      await this.logAutomationEvent('comment_engagement', 'error', { error: error.message });
     }
   }
 

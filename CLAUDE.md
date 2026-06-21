@@ -113,6 +113,13 @@ When you need to understand the docs or project content:
 - Output: 1920×1080, 30fps, with audio.
 - **Match-recap scoreboard mode**: pass `options.match = {homeTeam, awayTeam, homeScore, awayScore, homeCrest, awayCrest, label}` to `generateVideo/generateSlideshowVideo` → `_makeScoreboardOverlay()` renders a top scoreboard band (crests + big score + names + competition label) via sharp, composited over the AI scene like the normal title overlay. **Crests must be LOCAL image paths** (emoji flags don't render in sharp — `_countryFlag()` exists but is unused for this reason). Crests come from `utils/worldcup-provider.js`.
 
+### Audience interaction / comments (`utils/comment-engine.js`)
+- `CommentEngine` reads comments on the channel's OWN uploaded videos (from `youtube_upload.json` markers), classifies each via LLM (positive|question|spam|toxic|neutral), and drafts a reply (friendly football-fan voice, concise, **factual — anti-hallucination prompt, never invents stats/names**). Drafts go to the `comment_queue` table (PRIMARY KEY `comment_id` = seen-guard). **Review-first**: nothing posts automatically.
+- Actions: `postReply`/`postQueued` (comments.insert ✅), `skipQueued`, `rejectAsSpam` (moderation). **Heart and pin are NOT in the YouTube Data API v3** (web/app only) — can't be automated; classification is surfaced so you can do them manually.
+- Endpoints: `GET /comments?status=`, `POST /comments/ingest` (scan+draft), `POST /comments/:id/post {text?}` (approve+post, editable), `POST /comments/:id/skip`.
+- Dashboard **💬 Engagement tab**: review queue with editable reply box + Post/Skip per comment. Scheduler task `comment-engagement` (every 2h) drafts into the queue (never auto-posts). Needs `youtube.force-ssl` scope (present).
+- Verified live: scanned real channel, classified + drafted sensible replies, posted into queue.
+
 ### World Cup match videos (`utils/worldcup-provider.js`)
 - `getFinishedMatches({from,to,logger})` — football-data.org competition `WC`, FINISHED matches in a date window. **Rate-limit aware**: reads `X-Requests-Available-Minute`/`X-RequestCounter-Reset`, self-throttles when low, honors 429/Retry-After; caches the match list 30 min so a daily run makes ONE `/matches` call. Returns [] (never throws) to degrade safely. Needs `FOOTBALL_DATA_API_KEY` (now set).
 - `getCrest(url)` — **cache-first** crest fetch: local-first under `data/crests/` (gitignored), downloads + stores on miss. Verified live (0ms cache hit). Verified: 33 finished 2026 WC matches fetched.
