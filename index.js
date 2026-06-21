@@ -231,6 +231,29 @@ class YouTubeAutomationAgent {
       }
     });
 
+    // --- Notifications (dashboard alert list) ---
+    this.app.get('/notifications', async (req, res) => {
+      try {
+        const unreadOnly = req.query.unread === '1';
+        const items = await this.db.getNotifications({ unreadOnly });
+        const unread = items.filter(n => !n.read).length;
+        res.json({ success: true, items, unread });
+      } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+      }
+    });
+
+    this.app.post('/notifications/:id/read', async (req, res) => {
+      try { await this.db.markNotificationRead(parseInt(req.params.id)); res.json({ success: true }); }
+      catch (error) { res.status(500).json({ success: false, error: error.message }); }
+    });
+
+    // Clear one (?id=N via param) or all notifications.
+    this.app.post('/notifications/clear', async (req, res) => {
+      try { await this.db.clearNotifications(req.query.id ? parseInt(req.query.id) : null); res.json({ success: true }); }
+      catch (error) { res.status(500).json({ success: false, error: error.message }); }
+    });
+
     // --- Audience interaction (comments) ---
     // List the comment queue (default: pending review). ?status=all|pending|posted|skipped
     this.app.get('/comments', async (req, res) => {

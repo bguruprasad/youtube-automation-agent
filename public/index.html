@@ -54,6 +54,50 @@
       gap: 10px;
     }
 
+    /* Notifications */
+    #notif-wrap { position: relative; }
+    #notif-bell {
+      position: relative; background: var(--surface); border: 1px solid var(--border);
+      color: var(--text); font-size: 1.05rem; line-height: 1; padding: 8px 12px;
+      border-radius: 20px; cursor: pointer;
+    }
+    #notif-bell:hover { background: var(--surface-2); }
+    #notif-badge {
+      position: absolute; top: -6px; right: -6px; background: var(--red); color: #fff;
+      font-size: 0.65rem; font-weight: 700; min-width: 16px; height: 16px; line-height: 16px;
+      text-align: center; border-radius: 8px; padding: 0 4px;
+    }
+    #notif-panel {
+      display: none; position: absolute; right: 0; top: 44px; width: 360px; max-height: 460px;
+      overflow-y: auto; background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); box-shadow: 0 8px 28px rgba(0,0,0,0.5); z-index: 50;
+    }
+    #notif-panel.open { display: block; }
+    #notif-panel-head {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 12px 14px; border-bottom: 1px solid var(--border); position: sticky; top: 0;
+      background: var(--surface);
+    }
+    .notif-clear-all {
+      background: none; border: none; color: var(--accent); cursor: pointer; font-size: 0.8rem;
+    }
+    .notif-clear-all:hover { color: var(--accent-hover); }
+    .notif-item {
+      padding: 12px 14px; border-bottom: 1px solid var(--border); display: flex; gap: 10px;
+    }
+    .notif-item.unread { background: rgba(108,122,237,0.07); }
+    .notif-dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 6px; flex-shrink: 0; }
+    .notif-dot.info { background: var(--accent); }
+    .notif-dot.warning { background: var(--yellow); }
+    .notif-dot.error { background: var(--red); }
+    .notif-body { flex: 1; min-width: 0; }
+    .notif-title { font-weight: 600; font-size: 0.85rem; }
+    .notif-msg { font-size: 0.78rem; color: var(--text-dim); margin-top: 3px; }
+    .notif-time { font-size: 0.7rem; color: var(--text-dim); margin-top: 4px; }
+    .notif-x { background: none; border: none; color: var(--text-dim); cursor: pointer; font-size: 0.9rem; }
+    .notif-x:hover { color: var(--red); }
+    .notif-empty { padding: 24px 14px; text-align: center; color: var(--text-dim); font-size: 0.85rem; }
+
     #status-bar {
       display: flex;
       align-items: center;
@@ -457,9 +501,21 @@
   <div class="app">
     <header>
       <h1>🎬 YouTube Automation Agent</h1>
-      <div id="status-bar">
-        <span id="status-dot"></span>
-        <span id="status-text">Connecting...</span>
+      <div style="display:flex; align-items:center; gap:14px;">
+        <div id="notif-wrap">
+          <button id="notif-bell" onclick="toggleNotifPanel()" title="Notifications">🔔<span id="notif-badge" style="display:none">0</span></button>
+          <div id="notif-panel">
+            <div id="notif-panel-head">
+              <strong>Notifications</strong>
+              <button onclick="clearAllNotifs()" class="notif-clear-all">Clear all</button>
+            </div>
+            <div id="notif-list"><div class="notif-empty">No notifications</div></div>
+          </div>
+        </div>
+        <div id="status-bar">
+          <span id="status-dot"></span>
+          <span id="status-text">Connecting...</span>
+        </div>
       </div>
     </header>
 
@@ -1661,10 +1717,72 @@
       if (name === 'costs') loadCosts();
     }
 
+    // --- Notifications ---
+    function notifEsc(s) {
+      return String(s == null ? '' : s).replace(/[&<>"']/g, c =>
+        ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    }
+    function toggleNotifPanel() {
+      const p = document.getElementById('notif-panel');
+      const opening = !p.classList.contains('open');
+      p.classList.toggle('open');
+      if (opening) markAllNotifsRead();
+    }
+    // Close the panel when clicking outside it.
+    document.addEventListener('click', (e) => {
+      const wrap = document.getElementById('notif-wrap');
+      if (wrap && !wrap.contains(e.target)) document.getElementById('notif-panel').classList.remove('open');
+    });
+    let _notifs = [];
+    async function loadNotifs() {
+      try {
+        const r = await fetch('/notifications');
+        const d = await r.json();
+        if (!d.success) return;
+        _notifs = d.items || [];
+        const badge = document.getElementById('notif-badge');
+        if (d.unread > 0) { badge.style.display = ''; badge.textContent = d.unread > 99 ? '99+' : d.unread; }
+        else badge.style.display = 'none';
+        renderNotifs();
+      } catch {}
+    }
+    function renderNotifs() {
+      const list = document.getElementById('notif-list');
+      if (!_notifs.length) { list.innerHTML = '<div class="notif-empty">No notifications</div>'; return; }
+      list.innerHTML = _notifs.map(n => `
+        <div class="notif-item ${n.read ? '' : 'unread'}">
+          <div class="notif-dot ${notifEsc(n.level)}"></div>
+          <div class="notif-body">
+            <div class="notif-title">${notifEsc(n.title)}</div>
+            ${n.message ? `<div class="notif-msg">${notifEsc(n.message)}</div>` : ''}
+            <div class="notif-time">${notifEsc((n.updated_at || n.created_at || '').replace('T', ' ').slice(0, 16))}</div>
+          </div>
+          <button class="notif-x" title="Clear" onclick="clearNotif(${n.id})">✕</button>
+        </div>`).join('');
+    }
+    async function markAllNotifsRead() {
+      const unread = _notifs.filter(n => !n.read);
+      if (!unread.length) return;
+      await Promise.all(unread.map(n => fetch('/notifications/' + n.id + '/read', { method: 'POST' }).catch(() => {})));
+      document.getElementById('notif-badge').style.display = 'none';
+      _notifs = _notifs.map(n => ({ ...n, read: 1 }));
+      renderNotifs();
+    }
+    async function clearNotif(id) {
+      await fetch('/notifications/clear?id=' + id, { method: 'POST' }).catch(() => {});
+      loadNotifs();
+    }
+    async function clearAllNotifs() {
+      await fetch('/notifications/clear', { method: 'POST' }).catch(() => {});
+      loadNotifs();
+    }
+
     checkHealth();
     loadOutputs();      // default tab is Long Videos
+    loadNotifs();
     // Shorts load lazily when the Shorts tab is first opened (see switchTab).
     setInterval(checkHealth, 30000);
+    setInterval(loadNotifs, 30000);
   </script>
 </body>
 </html>

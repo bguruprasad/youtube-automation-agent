@@ -238,6 +238,22 @@ class Database {
         type TEXT NOT NULL,
         title TEXT,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP
+      )`,
+
+      // Dashboard notifications: a persistent, user-clearable list of things the
+      // operator should see (e.g. a score mismatch that blocked a match video).
+      // level: info | warning | error. read=0 until acknowledged; rows live until
+      // explicitly cleared. dedup_key (optional) lets a repeat of the same event
+      // update the existing row instead of stacking duplicates.
+      `CREATE TABLE IF NOT EXISTS notifications (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        level TEXT NOT NULL DEFAULT 'info',
+        title TEXT NOT NULL,
+        message TEXT,
+        dedup_key TEXT,
+        read INTEGER DEFAULT 0,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
       )`
     ];
 
@@ -250,6 +266,11 @@ class Database {
     // and not deduped (SQLite treats NULLs as distinct in UNIQUE indexes).
     await this.executeQuery(
       'CREATE UNIQUE INDEX IF NOT EXISTS idx_cost_ref ON cost_ledger(ref, category)'
+    ).catch(() => {});
+
+    // Dedup notifications by key (NULL keys stay distinct → not deduped).
+    await this.executeQuery(
+      'CREATE UNIQUE INDEX IF NOT EXISTS idx_notif_dedup ON notifications(dedup_key)'
     ).catch(() => {});
 
     // Insert default settings
@@ -596,6 +617,44 @@ class Database {
       settings[row.key] = row.value;
       return settings;
     }, {});
+  }
+
+  // --- Notifications (dashboard alert list) ---
+  // Add a notification. If dedupKey is given and a row with it exists, the
+  // existing row is refreshed (message/level/updated_at) and marked unread again
+  // instead of stacking a duplicate. level: info | warning | error.
+  async addNotification({ level = 'info', title, message = '', dedupKey = null }) {
+    if (dedupKey) {
+      const existing = await this.getRow('SELECT id FROM notifications WHERE dedup_key = ?', [dedupKey]);
+      if (existing) {
+        await this.executeQuery(
+          `UPDATE notifications SET level=?, title=?, message=?, read=0, updated_at=datetime('now') WHERE id=?`,
+          [level, title, message, existing.id]
+        );
+        return existing.id;
+      }
+    }
+    const r = await this.executeQuery(
+      `INSERT INTO notifications (level, title, message, dedup_key) VALUES (?,?,?,?)`,
+      [level, title, message, dedupKey]
+    );
+    return r.lastID;
+  }
+
+  async getNotifications({ unreadOnly = false, limit = 100 } = {}) {
+    const where = unreadOnly ? 'WHERE read = 0' : '';
+    return this.getAllRows(
+      `SELECT * FROM notifications ${where} ORDER BY updated_at DESC LIMIT ?`, [limit]);
+  }
+
+  async markNotificationRead(id) {
+    await this.executeQuery(`UPDATE notifications SET read=1, updated_at=datetime('now') WHERE id=?`, [id]);
+  }
+
+  // Clear (delete) notifications. With id → that one; without → all.
+  async clearNotifications(id = null) {
+    if (id != null) return this.executeQuery('DELETE FROM notifications WHERE id=?', [id]);
+    return this.executeQuery('DELETE FROM notifications');
   }
 
   // Utility methods

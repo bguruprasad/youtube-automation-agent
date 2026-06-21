@@ -16,7 +16,7 @@ class DailyAutomation {
     this.taskMeta = {
       'daily-content-generation': { cron: '0 6 * * *', label: 'Daily content generation (long video)', run: () => this.runDailyContentGeneration() },
       'daily-shorts-generation': { cron: '0 7 * * *', label: 'Daily Shorts generation', run: () => this.runDailyShortsGeneration() },
-      'worldcup-match-videos': { cron: '*/30 * * * *', label: 'World Cup match videos (polls every 30 min; recap + Short ~30 min after full-time, auto-upload unlisted)', run: () => this.runWorldCupMatchVideos() },
+      'worldcup-match-videos': { cron: '0 * * * *', label: 'World Cup match videos (polls hourly; recap + Short after full-time, second-source score cross-check, auto-upload unlisted)', run: () => this.runWorldCupMatchVideos() },
       'comment-engagement': { cron: '0 */2 * * *', label: 'Comment engagement (drafts replies to new comments into the review queue every 2h)', run: () => this.runCommentEngagement() },
       'publish-queue-processing': { cron: '*/15 * * * *', label: 'Publish queue processing', run: () => this.processPublishQueue() },
       'daily-analytics':          { cron: '0 9 * * *',  label: 'Daily analytics', run: () => this.collectDailyAnalytics() },
@@ -252,11 +252,50 @@ class DailyAutomation {
 
       this.logger.info(`WC task: ${fresh.length} new match(es) to process`);
       const privacy = (await this.db.getSetting('wc_upload_privacy')) || 'unlisted';
+      // Which formats to produce per match. Default both; settable via the
+      // `wc_formats` setting (JSON array). Shorts get more traction than longs,
+      // so longs can be disabled here without touching the long pipeline.
+      let formats = ['long', 'short'];
+      try {
+        const raw = await this.db.getSetting('wc_formats');
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed) && parsed.length) {
+            formats = parsed.filter(f => f === 'long' || f === 'short');
+          }
+        }
+      } catch {}
+      if (!formats.length) formats = ['short']; // never leave it empty
+      this.logger.info(`WC task: formats = [${formats.join(', ')}]`);
       const made = [];
+
+      const crosscheck = require('../utils/score-crosscheck');
 
       for (const match of fresh) {
         try {
-          const result = await this.app.generateMatchVideos(match, { formats: ['long', 'short'] });
+          // Independent score verification before we generate/publish. On a
+          // CONFIRMED mismatch, skip WITHOUT marking the match seen so the next
+          // cycle re-checks — by then one provider has usually corrected. A
+          // cross-check that can't run (no key / lookup down) fails open.
+          const vc = await crosscheck.verifyMatch(match, { logger: this.logger });
+          if (vc.checked && !vc.ok) {
+            this.logger.warn(`WC task: SCORE MISMATCH for ${vc.fixture} — primary ${vc.primary} vs second ${vc.second}; skipping (will retry next cycle)`);
+            await this.logAutomationEvent('worldcup_match_videos', 'skipped', { matchId: match.id, fixture: vc.fixture, primary: vc.primary, second: vc.second });
+            // Surface to the dashboard notification list (deduped per match so
+            // hourly re-checks refresh one entry rather than stacking).
+            try {
+              await this.db.addNotification({
+                level: 'warning',
+                title: `Score mismatch — match skipped: ${vc.fixture}`,
+                message: `Primary (football-data.org) says ${vc.primary} but second source (API-Football) says ${vc.second}. No video was generated; will re-check next hour until they agree.`,
+                dedupKey: `wc_mismatch:${match.id}`,
+              });
+            } catch (e) { this.logger.warn(`Notification add failed: ${e.message}`); }
+            continue;
+          }
+          if (vc.checked) this.logger.info(`WC task: score confirmed ${match.homeTeam} ${match.homeScore}-${match.awayScore} ${match.awayTeam} (second source agrees)`);
+
+          const result = await this.app.generateMatchVideos(match, { formats });
 
           // Auto-upload both (best-effort) at the configured privacy.
           const { outputRoot, shortsRoot } = require('../utils/paths');
