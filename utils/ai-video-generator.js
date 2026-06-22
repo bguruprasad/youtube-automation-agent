@@ -299,21 +299,26 @@ class AIVideoGenerator {
     return h > w ? '9:16' : (w > h ? '16:9' : '1:1');
   }
 
-  // Generate scene images via Flux 1.1 Pro on Replicate. Returns saved PNG paths
-  // (same contract as the gpt-image-1 path). Throws on failure so the caller can
-  // fall back. Records a flat per-image cost (~$0.04) on the cost meter.
+  // Generate scene images via Flux on Replicate (default flux-2-pro). Returns
+  // saved PNG paths (same contract as the gpt-image-1 path). Throws on failure
+  // so the caller can fall back.
+  //
+  // Pricing (flux-2-pro): $0.015 per run + $0.015 per OUTPUT megapixel (no input
+  // image, so no input-MP charge). Cost is metered as base + MP×rate.
   async _generateFluxAssets(prompt, style, imageOpts = {}) {
-    const model = process.env.FLUX_MODEL || 'black-forest-labs/flux-1.1-pro';
+    const model = process.env.FLUX_MODEL || 'black-forest-labs/flux-2-pro';
     const aspect = this._fluxAspectRatio(imageOpts.size);
+    const megapixels = process.env.FLUX_MEGAPIXELS || '1';
     const fullPrompt = this.enhanceVisualPrompt(prompt, style);
-    this.logger.info(`Generating visual asset via Flux (${model}, ${aspect})`);
+    this.logger.info(`Generating visual asset via Flux (${model}, ${aspect}, ${megapixels}MP)`);
 
     const output = await this.replicate.run(model, {
       input: {
         prompt: fullPrompt,
         aspect_ratio: aspect,
+        megapixels,              // "1" | "0.25"; flux-2-pro accepts a target MP
         output_format: 'png',
-        safety_tolerance: 2,
+        safety_tolerance: parseInt(process.env.FLUX_SAFETY_TOLERANCE || '2'),
         prompt_upsampling: true,
       },
     });
@@ -329,8 +334,11 @@ class AIVideoGenerator {
     await this.downloadImage(url, imagePath);
 
     if (this.costMeter) {
-      const rate = parseFloat(process.env.FLUX_IMAGE_RATE || '0.04');
-      this.costMeter.recordFlatImage(rate, { label: 'Scene image (Flux)', detail: `${aspect} ${model}` });
+      const base = parseFloat(process.env.FLUX_RUN_RATE || '0.015');     // per run
+      const perMp = parseFloat(process.env.FLUX_MP_RATE || '0.015');     // per output MP
+      const mp = parseFloat(megapixels) || 1;
+      this.costMeter.recordFlatImage(base + perMp * mp, {
+        label: 'Scene image (Flux)', detail: `${aspect} ${mp}MP ${model}` });
     }
     this.logger.info('Generated 1 visual asset (Flux)');
     return [imagePath];
@@ -358,22 +366,21 @@ class AIVideoGenerator {
   // the image reflects what's actually being narrated — team colours, opponent,
   // setting — instead of a generic stadium shot.
   //
-  // Hard limits of gpt-image-1 we design AROUND (not against):
-  //  - It cannot render readable jersey TEXT (a player's name comes out garbled),
-  //    so we explicitly suppress all jersey text/numbers rather than rely on it
-  //    to convey identity.
-  //  - It cannot reproduce a specific real player's FACE, so we frame shots to
-  //    keep the face off-subject (action / from-behind / over-the-shoulder).
-  //  - It scatters colours unless told teammates share ONE kit, so we force a
-  //    single coherent kit colour per team and matching teammates.
-  // (TODO: a real-likeness / accurate-kit path is parked for a different model.)
+  // PROVIDER-AWARE framing (IMAGE_PROVIDER):
+  //  - flux  (flux-2-pro): renders real player likeness AND legible jersey text,
+  //    so we prompt the player DIRECTLY with the face shown — best identity.
+  //  - openai (gpt-image-1): garbles jersey text and can't do a real likeness,
+  //    so we keep the face off-subject and suppress jersey text (identity comes
+  //    from kit colour + action). Names also trip its safety filter.
+  // Both: force teammates into ONE consistent kit colour (avoids mixed colours).
   //
   // opts: { hint, sceneDirection, teams:{home,away}, kits:{home,away} }
   //   kits.home/away are short colour descriptions, e.g. "red and white stripes".
   buildSceneImagePrompt(subject, opts = {}) {
     const { hint = '', sceneDirection = '', teams = null, kits = null } = opts;
+    const flux = this._imageProvider() === 'flux';
     const parts = [];
-    parts.push(`Dramatic, photorealistic football (soccer) scene depicting: ${subject}.`);
+    parts.push(`Cinematic, photorealistic football (soccer) scene depicting: ${subject}.`);
     if (hint) parts.push(`Context: ${hint}`);
     if (sceneDirection) parts.push(`Scene: ${sceneDirection}`);
     if (teams && (teams.home || teams.away)) {
@@ -388,16 +395,24 @@ class AIVideoGenerator {
     } else {
       parts.push('All players on the same team wear identical matching kit colours; do not mix kit colours within one team.');
     }
-    // Framing that avoids the face (no real likeness) AND avoids jersey text
-    // (the model garbles names) — identity is carried by kit colour + action,
-    // not by a name on the shirt.
-    parts.push(
-      'Frame as a dynamic action shot — a player in motion mid-celebration or mid-play, ' +
-      'shot from a distance or from behind / over the shoulder, motion blur, face turned away or not the focus. ' +
-      'Plain kits with NO names, NO numbers, NO readable text of any kind on the jerseys. ' +
-      'Packed stadium, cinematic floodlights. No text, no watermarks, no scoreboard graphics, ' +
-      'no attempt to depict a specific real identifiable person\'s face.'
-    );
+    if (flux) {
+      // Flux 2 does real likeness + legible text — depict the player directly.
+      parts.push(
+        'Depict the real, recognizable player accurately, face clearly visible, ' +
+        'captured mid-action or celebrating, dynamic motion, shallow depth of field, motion blur. ' +
+        'Packed stadium, cinematic floodlights, 35mm film look, high dynamic range. ' +
+        'No on-screen captions, no watermarks, no scoreboard graphics.'
+      );
+    } else {
+      // gpt-image-1: face off-subject, no jersey text (it garbles names).
+      parts.push(
+        'Frame as a dynamic action shot — a player in motion mid-celebration or mid-play, ' +
+        'shot from a distance or from behind / over the shoulder, motion blur, face turned away or not the focus. ' +
+        'Plain kits with NO names, NO numbers, NO readable text of any kind on the jerseys. ' +
+        'Packed stadium, cinematic floodlights. No text, no watermarks, no scoreboard graphics, ' +
+        'no attempt to depict a specific real identifiable person\'s face.'
+      );
+    }
     return parts.join(' ');
   }
 
