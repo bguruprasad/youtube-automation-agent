@@ -904,7 +904,41 @@ class AnalyticsOptimizationAgent {
       }
     }
 
-    const result = { generatedAt: new Date().toISOString(), hasData: true, facts, takeaways, recommendations };
+    // Ready-to-use content ideas for BOTH formats, grounded in the takeaways +
+    // recommendations above. Each idea is directly usable: longs give a `topic`
+    // (for POST /generate), shorts give a `moment` (for POST /generate-short).
+    let contentIdeas = { shorts: [], longs: [] };
+    if (this.openai) {
+      try {
+        const resp = await this.openai.chat.completions.create({
+          model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+          messages: [
+            { role: 'system', content: 'You are a YouTube content strategist for a football (soccer) channel. ' +
+              'Propose concrete, ready-to-produce video ideas, DIRECTLY INFLUENCED by the provided takeaways and recommendations ' +
+              '(lean into what works, fix what does not). Football/soccer subjects only. Be specific and factual — real players, ' +
+              'matches, moments, eras; no invented stats. Return ONLY JSON of the form: ' +
+              '{"shorts":[{"title":"punchy <=70 chars","moment":"a short subject phrase to generate a Short about, e.g. a specific moment/player/match","why":"one line tying it to the data"}],' +
+              '"longs":[{"title":"compelling <=80 chars","topic":"a topic phrase to generate a long video about","why":"one line tying it to the data"}]}. ' +
+              'Give 3 shorts and 2 longs. No preamble, no markdown.' },
+            { role: 'user', content: `Performance data (JSON):\n${JSON.stringify(facts, null, 2)}\n\n` +
+              `Key takeaways:\n- ${takeaways.join('\n- ') || '(none)'}\n\n` +
+              `Recommendations:\n- ${(recommendations.length ? recommendations : ['(none)']).join('\n- ')}\n\n` +
+              'Propose ideas that act on the above. The "moment"/"topic" fields must be usable as-is to generate content.' },
+          ],
+          temperature: 0.8, max_tokens: 800,
+        });
+        const txt = resp.choices[0].message.content.trim().replace(/^```json?\n?/i, '').replace(/\n?```$/i, '');
+        const parsed = JSON.parse(txt);
+        contentIdeas = {
+          shorts: Array.isArray(parsed.shorts) ? parsed.shorts.slice(0, 5) : [],
+          longs: Array.isArray(parsed.longs) ? parsed.longs.slice(0, 5) : [],
+        };
+      } catch (e) {
+        this.logger.warn(`Strategy content ideas failed: ${e.message}`);
+      }
+    }
+
+    const result = { generatedAt: new Date().toISOString(), hasData: true, facts, takeaways, recommendations, contentIdeas };
 
     // Persist latest.
     try {

@@ -486,6 +486,15 @@
     .strategy-list { margin: 0 0 0 18px; font-size: 0.88rem; }
     .strategy-list li { margin-bottom: 6px; line-height: 1.45; }
     .strategy-list.recs li { color: var(--text); }
+    /* Content ideas */
+    .idea-group-label { font-size: 0.82rem; font-weight: 600; margin: 12px 0 6px; color: var(--text); }
+    .idea-group-label span { font-weight: 400; color: var(--text-dim); font-size: 0.74rem; }
+    .idea-card { background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; }
+    .idea-title { font-weight: 600; font-size: 0.86rem; }
+    .idea-why { font-size: 0.76rem; color: var(--text-dim); margin: 3px 0 8px; line-height: 1.4; }
+    .idea-prompt-row { display: flex; align-items: center; gap: 8px; }
+    .idea-prompt { flex: 1; min-width: 0; background: var(--bg); border: 1px solid var(--border); border-radius: 5px;
+      padding: 6px 9px; font-size: 0.78rem; color: var(--accent-hover); overflow-x: auto; white-space: nowrap; }
     /* Monetization */
     .monet-banner { font-size: 0.85rem; color: var(--text-dim); background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; margin-bottom: 14px; }
     .monet-banner.eligible { color: var(--green); border-color: var(--green); }
@@ -1539,11 +1548,42 @@
       if (!r.hasData) { body.innerHTML = `<div class="empty-state">${escHtml(r.message || 'No data.')}</div>`; return; }
       const takeaways = (r.takeaways || []).map(t => `<li>${escHtml(t)}</li>`).join('');
       const recs = (r.recommendations || []).map(t => `<li>${escHtml(t)}</li>`).join('');
+
+      // Ready-to-use content ideas (grounded in the takeaways/recs). Each shows a
+      // title, the why, and the actual prompt text with a Copy button.
+      const ideaCard = (idea, promptField) => {
+        const prompt = idea[promptField] || '';
+        return `<div class="idea-card">
+          <div class="idea-title">${escHtml(idea.title || prompt)}</div>
+          ${idea.why ? `<div class="idea-why">${escHtml(idea.why)}</div>` : ''}
+          <div class="idea-prompt-row">
+            <code class="idea-prompt">${escHtml(prompt)}</code>
+            <button class="btn btn-sm btn-outline" onclick='copyIdeaPrompt(this, ${JSON.stringify(prompt)})'>Copy</button>
+          </div>
+        </div>`;
+      };
+      const ci = r.contentIdeas || { shorts: [], longs: [] };
+      const shortIdeas = (ci.shorts || []).map(i => ideaCard(i, 'moment')).join('');
+      const longIdeas = (ci.longs || []).map(i => ideaCard(i, 'topic')).join('');
+      const ideasBlock = (shortIdeas || longIdeas) ? `
+        <h4 style="margin:16px 0 8px;">💡 Content ideas to use</h4>
+        <p class="info-note" style="margin-bottom:10px;">Influenced by the takeaways & recommendations above. Copy a prompt into Generate (longs) or Shorts.</p>
+        ${longIdeas ? `<div class="idea-group-label">📺 Long videos <span>(paste as topic)</span></div>${longIdeas}` : ''}
+        ${shortIdeas ? `<div class="idea-group-label">📱 Shorts <span>(paste as moment)</span></div>${shortIdeas}` : ''}` : '';
+
       body.innerHTML = `
         <div style="font-size:0.78rem;color:var(--text-dim);margin-bottom:10px;">Generated ${new Date(r.generatedAt).toLocaleString()}</div>
         ${takeaways ? `<h4 style="margin:8px 0;">Key takeaways</h4><ul class="strategy-list">${takeaways}</ul>` : ''}
         ${recs ? `<h4 style="margin:14px 0 8px;">🧠 Recommendations</h4><ul class="strategy-list recs">${recs}</ul>`
-               : '<p class="info-note">LLM recommendations unavailable (OpenAI not configured or failed).</p>'}`;
+               : '<p class="info-note">LLM recommendations unavailable (OpenAI not configured or failed).</p>'}
+        ${ideasBlock}`;
+    }
+
+    function copyIdeaPrompt(btn, text) {
+      navigator.clipboard.writeText(text).then(() => {
+        const orig = btn.textContent; btn.textContent = '✓ Copied'; btn.disabled = true;
+        setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 1400);
+      }).catch(() => {});
     }
 
     async function loadStrategyReview() {
