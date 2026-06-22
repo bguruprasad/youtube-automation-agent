@@ -86,7 +86,29 @@ When you need to understand the docs or project content:
 ## Technical Details (verified)
 
 ### Models & Cost (~$0.20–0.30 per run)
-- Image gen: `gpt-image-1` (NOT dall-e-3), ~$0.04/image × 5 images = ~$0.20
+- **Image gen — TWO providers, switchable via `IMAGE_PROVIDER`** (`utils/ai-video-generator.js`):
+  - `IMAGE_PROVIDER=flux` (current preferred): **Flux 2 Pro via Replicate**
+    (`black-forest-labs/flux-2-pro`). Renders **real player likeness + legible
+    jersey text** (gpt-image-1 can do neither). Needs `REPLICATE_API_KEY` and
+    **prepaid Replicate credit** (NOT postpaid — a 402 "insufficient credit"
+    means buy credit + wait a few min). Cost: **$0.015/run + $0.015/output-MP**
+    (≈$0.03 at 1MP). Megapixels are per-format: `FLUX_MEGAPIXELS_SHORT` /
+    `FLUX_MEGAPIXELS_LONG` (both default `1`), global `FLUX_MEGAPIXELS`, or
+    explicit `opts.megapixels`. Other knobs: `FLUX_MODEL`, `FLUX_SAFETY_TOLERANCE`
+    (default `1`=strict; moderation only, not prompt-adherence),
+    `FLUX_RUN_RATE`/`FLUX_MP_RATE` (cost meter). On any Flux error it **falls
+    back to gpt-image-1**, then simulation.
+  - `IMAGE_PROVIDER=openai` (default if unset): `gpt-image-1` (NOT dall-e-3),
+    ~$0.04/image × 5 = ~$0.20.
+  - **Prompts are provider-aware** (`buildSceneImagePrompt`): Flux depicts the
+    named player **directly, face shown**; gpt-image-1 keeps the face
+    off-subject and bans jersey text (it garbles names). Both force ONE
+    consistent kit colour per team.
+  - **GOTCHA (fixed):** a Replicate key set for *images* used to also trigger the
+    Replicate *video* path (stale SVD model → 422 → `.mp4.info` stub). Video
+    assembly is now gated on `REPLICATE_VIDEO=true` (default off); the ffmpeg
+    slideshow is the real video path.
+- ~~Image gen: `gpt-image-1`, ~$0.04/image~~ (superseded above; gpt-image-1 is now the fallback)
 - TTS: OpenAI `tts-1`, voice `onyx`, ~$0.06. 4096-char limit handled by sentence-boundary chunking; chunks concatenated with ffmpeg.
 - Text: `gpt-4o-mini`, negligible cost.
 - **Per-run cost metering** (`utils/cost-meter.js`): a `CostMeter` is attached to
