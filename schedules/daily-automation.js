@@ -29,6 +29,9 @@ class DailyAutomation {
     this.lastRun = {};
     // Names of individually-disabled tasks (loaded from DB in initialize()).
     this.disabledTasks = new Set();
+    // Restart-safety state.
+    this.activeRuns = new Set();   // task names currently executing (this process)
+    this.shuttingDown = false;     // set by the SIGTERM/SIGINT handler
   }
 
   async initialize() {
@@ -58,6 +61,13 @@ class DailyAutomation {
     // processed matches aren't re-generated/re-uploaded under the new tasks.
     await this._migrateWcSeenGuard();
 
+    // Restart-safety: detect a run that was interrupted by a previous
+    // restart/crash (stale run-lock), then delete any half-written output
+    // folders left behind, before new tasks start.
+    await this._recoverInterruptedRuns();
+    await this._cleanupIncompleteFolders();
+    this._installShutdownHandlers();
+
     await this.setupScheduledTasks();
 
     // Start monitoring loop
@@ -80,12 +90,16 @@ class DailyAutomation {
           this.logger.info(`Skipping ${name} (task disabled)`);
           return;
         }
+        if (this.shuttingDown) { this.logger.info(`Skipping ${name} (shutting down)`); return; }
         this.lastRun[name] = { at: new Date().toISOString(), status: 'running', detail: 'scheduled' };
+        await this._acquireRunLock(name);
         try {
           await meta.run();
           this.lastRun[name] = { at: new Date().toISOString(), status: 'success', detail: 'scheduled' };
         } catch (error) {
           this.lastRun[name] = { at: new Date().toISOString(), status: 'error', detail: error.message };
+        } finally {
+          await this._releaseRunLock(name);
         }
       }, { scheduled: false });
       this.scheduledTasks.set(name, job);
@@ -97,6 +111,124 @@ class DailyAutomation {
       task.start();
       this.logger.info(`Started scheduled task: ${name} (${this.taskMeta[name].cron})`);
     });
+  }
+
+  // ---- Restart-safety (Tiers 1–3) ----
+
+  // Tier 2: run-lock. Persist which tasks are running so an interrupting restart
+  // is detectable. Stored as a JSON map { task: { startedAt, pid } } in settings.
+  async _readRunLocks() {
+    try { return JSON.parse(await this.db.getSetting('run_locks') || '{}'); } catch { return {}; }
+  }
+  async _writeRunLocks(locks) {
+    await this.db.setSetting('run_locks', JSON.stringify(locks), 'In-flight task run-locks (restart-safety)');
+  }
+  async _acquireRunLock(name) {
+    this.activeRuns.add(name);
+    const locks = await this._readRunLocks();
+    locks[name] = { startedAt: new Date().toISOString(), pid: process.pid };
+    await this._writeRunLocks(locks);
+  }
+  async _releaseRunLock(name) {
+    this.activeRuns.delete(name);
+    const locks = await this._readRunLocks();
+    delete locks[name];
+    await this._writeRunLocks(locks);
+  }
+
+  // Tier 2: on startup, any leftover run-lock means a task was interrupted by a
+  // restart/crash (this is a fresh process, so nothing of ours is truly running).
+  // Surface it as a dashboard notification and clear the locks.
+  async _recoverInterruptedRuns() {
+    const locks = await this._readRunLocks();
+    const names = Object.keys(locks);
+    if (!names.length) return;
+    for (const name of names) {
+      const startedAt = locks[name]?.startedAt || 'unknown time';
+      this.logger.warn(`Detected interrupted run: ${name} (started ${startedAt}) — clearing stale lock`);
+      this.lastRun[name] = { at: new Date().toISOString(), status: 'interrupted', detail: 'restart/crash mid-run' };
+      try {
+        if (this.db.addNotification) {
+          await this.db.addNotification({
+            level: 'warning',
+            title: `Task interrupted by restart: ${name}`,
+            message: `"${name}" was running (since ${startedAt}) when the server restarted. It did not finish; any partial output was cleaned up. It will run again on its next schedule.`,
+            dedupKey: `interrupted:${name}:${startedAt}`,
+          });
+        }
+      } catch (e) { this.logger.warn(`Interrupted-run notification failed: ${e.message}`); }
+    }
+    await this._writeRunLocks({});
+  }
+
+  // Tier 1: delete half-written output folders left by an interrupted run. A
+  // folder is "incomplete" if it has generation artifacts (script.json/assets)
+  // but NO playable video.mp4. We verify playability with ffprobe (a leftover
+  // video.mp4.info stub alongside a REAL video is NOT junk — that tripped an
+  // earlier naive check). Skip folders touched in the last 3 min (could belong
+  // to a run in another process). Best-effort; never throws.
+  async _cleanupIncompleteFolders() {
+    const fs = require('fs');
+    const path = require('path');
+    const { execSync } = require('child_process');
+    let roots = [];
+    try { const p = require('../utils/paths'); roots = [p.outputRoot(), p.shortsRoot()]; } catch { return; }
+
+    const hasPlayableVideo = (mp4) => {
+      try {
+        if (!fs.existsSync(mp4) || fs.statSync(mp4).size < 1024) return false;
+        const out = execSync(
+          `ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of csv=p=0 "${mp4}"`,
+          { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
+        return out.length > 0;
+      } catch { return false; }
+    };
+
+    let removed = 0;
+    for (const root of roots) {
+      let entries = [];
+      try { entries = fs.readdirSync(root, { withFileTypes: true }); } catch { continue; }
+      for (const e of entries) {
+        if (!e.isDirectory() || e.name === 'shorts') continue;
+        const dir = path.join(root, e.name);
+        try {
+          // Only consider folders that look like a run (have script.json/assets).
+          const looksLikeRun = fs.existsSync(path.join(dir, 'script.json')) || fs.existsSync(path.join(dir, 'assets'));
+          if (!looksLikeRun) continue;
+          // Don't touch very recent folders (possible in-progress run elsewhere).
+          if (Date.now() - fs.statSync(dir).mtimeMs < 3 * 60 * 1000) continue;
+          if (hasPlayableVideo(path.join(dir, 'video.mp4'))) continue; // complete → keep
+          fs.rmSync(dir, { recursive: true, force: true });
+          this.logger.warn(`Cleaned up incomplete run folder: ${e.name}`);
+          removed++;
+        } catch (err) { this.logger.warn(`Cleanup skip ${e.name}: ${err.message}`); }
+      }
+    }
+    if (removed) this.logger.info(`Restart cleanup: removed ${removed} incomplete folder(s)`);
+  }
+
+  // Tier 3: graceful shutdown. On SIGTERM/SIGINT, stop accepting new ticks and
+  // wait (bounded) for an active run to finish so we don't kill it mid-step.
+  _installShutdownHandlers() {
+    if (this._shutdownInstalled) return;
+    this._shutdownInstalled = true;
+    const handler = (sig) => {
+      if (this.shuttingDown) return;
+      this.shuttingDown = true;
+      this.logger.warn(`${sig} received — graceful shutdown; ${this.activeRuns.size} active run(s)`);
+      const deadlineMs = parseInt(process.env.SHUTDOWN_GRACE_MS || '25000');
+      const start = Date.now();
+      const wait = () => {
+        if (this.activeRuns.size === 0 || Date.now() - start > deadlineMs) {
+          this.logger.info(`Shutdown: ${this.activeRuns.size === 0 ? 'all runs finished' : 'grace period elapsed'}; exiting`);
+          process.exit(0);
+        }
+        setTimeout(wait, 500);
+      };
+      wait();
+    };
+    process.on('SIGTERM', () => handler('SIGTERM'));
+    process.on('SIGINT', () => handler('SIGINT'));
   }
 
   async runDailyContentGeneration() {
@@ -794,6 +926,7 @@ class DailyAutomation {
     if (!meta) throw new Error(`Unknown task: ${name}`);
     this.logger.info(`Manually running task: ${name}`);
     this.lastRun[name] = { at: new Date().toISOString(), status: 'running', detail: 'manual' };
+    await this._acquireRunLock(name);
     try {
       await meta.run();
       this.lastRun[name] = { at: new Date().toISOString(), status: 'success', detail: 'manual' };
@@ -801,6 +934,8 @@ class DailyAutomation {
     } catch (error) {
       this.lastRun[name] = { at: new Date().toISOString(), status: 'error', detail: error.message };
       throw error;
+    } finally {
+      await this._releaseRunLock(name);
     }
   }
 
