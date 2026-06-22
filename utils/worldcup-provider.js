@@ -100,17 +100,28 @@ async function getFinishedMatches({ from = null, to = null, logger = null } = {}
   }
 
   const url = `${BASE}/competitions/${COMP}/matches?status=FINISHED&dateFrom=${fmt(fromD)}&dateTo=${fmt(toD)}`;
-  try {
-    const { data } = await getJson(url, key, logger);
-    const matches = (data.matches || []).map(normalizeMatch)
-      .filter((m) => m.homeScore != null && m.awayScore != null);
-    _cache = { key: cacheKey, at: Date.now(), data: matches };
-    if (logger) logger.info(`Fetched ${matches.length} finished WC match(es) [${cacheKey}]`);
-    return matches;
-  } catch (e) {
-    if (logger) logger.warn(`WC match fetch failed: ${e.message}`);
-    return [];
+  // Retry on TRANSIENT network failures (ECONNRESET / TLS-disconnect / timeout)
+  // with exponential backoff, so a single momentary blip doesn't waste a whole
+  // polling cycle (a finished match would otherwise be delayed an hour). The API
+  // itself is reliable; these are client/network-side drops. Still fails open
+  // (returns []) if every attempt fails.
+  const attempts = Math.max(1, parseInt(process.env.WC_FETCH_RETRIES || '3'));
+  for (let i = 1; i <= attempts; i++) {
+    try {
+      const { data } = await getJson(url, key, logger);
+      const matches = (data.matches || []).map(normalizeMatch)
+        .filter((m) => m.homeScore != null && m.awayScore != null);
+      _cache = { key: cacheKey, at: Date.now(), data: matches };
+      if (logger) logger.info(`Fetched ${matches.length} finished WC match(es) [${cacheKey}]`);
+      return matches;
+    } catch (e) {
+      const last = i === attempts;
+      if (logger) logger.warn(`WC match fetch attempt ${i}/${attempts} failed: ${e.message}${last ? ' (giving up this cycle)' : ' — retrying'}`);
+      if (last) return [];
+      await new Promise((r) => setTimeout(r, 1000 * Math.pow(2, i - 1))); // 1s, 2s, …
+    }
   }
+  return [];
 }
 
 // Local crest cache dir. Crests rarely change, so we store each one keyed by a
