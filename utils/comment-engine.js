@@ -164,6 +164,15 @@ class CommentEngine {
       const cls = ['positive', 'question', 'spam', 'toxic', 'neutral'].includes(parsed.classification)
         ? parsed.classification : 'neutral';
       let reply = (cls === 'positive' || cls === 'question') ? String(parsed.reply || '').trim() : '';
+      // Replies in a thread WE'RE in (banter, pushback, follow-ups) are worth
+      // engaging even if classified neutral — a viewer talking back to us
+      // shouldn't be silently skipped. Draft a reply unless it's spam/toxic.
+      // The system prompt already asks for the right tone (esp. AI-image
+      // pushback). Use the LLM's reply if present, else a warm generic.
+      if (comment.replyToOwn && cls !== 'spam' && cls !== 'toxic' && !reply) {
+        reply = String(parsed.reply || '').trim() ||
+          'Appreciate you watching and chiming in! 🙌⚽';
+      }
       if (reply.length > 280) reply = reply.slice(0, 277) + '…';
       return { classification: cls, draftReply: reply };
     } catch (e) {

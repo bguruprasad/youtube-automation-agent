@@ -670,6 +670,12 @@
       <div class="section-title" style="justify-content:space-between;">
         <span>💬 Comment Review Queue</span>
         <span>
+          <select id="comment-filter" class="short-privacy" onchange="loadComments()">
+            <option value="pending">Pending</option>
+            <option value="all">All</option>
+            <option value="skipped">Skipped</option>
+            <option value="posted">Posted</option>
+          </select>
           <button class="btn btn-sm" id="comment-ingest-btn" onclick="ingestComments()">🔄 Scan for new comments</button>
           <button class="btn btn-sm btn-outline" onclick="loadComments()">Refresh</button>
         </span>
@@ -1614,28 +1620,35 @@
     // --- Engagement (comment review queue) ---
     async function loadComments() {
       const body = document.getElementById('comments-body');
+      const filter = (document.getElementById('comment-filter')||{}).value || 'pending';
       try {
-        const res = await fetch('/comments?status=pending');
+        const res = await fetch('/comments?status=' + encodeURIComponent(filter));
         const data = await res.json();
         if (!data.success) throw new Error(data.error || 'Failed');
         const counts = {}; (data.counts||[]).forEach(c => counts[c.status] = c.n);
         const countLine = `<p class="info-note" style="margin-top:0">Pending: ${counts.pending||0} · Posted: ${counts.posted||0} · Skipped: ${counts.skipped||0}</p>`;
-        if (!data.comments.length) { body.innerHTML = countLine + '<div class="empty-state">No pending comments. Click "Scan for new comments".</div>'; return; }
-        body.innerHTML = countLine + data.comments.map(c => `
+        if (!data.comments.length) { body.innerHTML = countLine + `<div class="empty-state">No ${filter==='all'?'':filter+' '}comments.</div>`; return; }
+        body.innerHTML = countLine + data.comments.map(c => {
+          const isPosted = c.status === 'posted';
+          return `
           <div class="comment-card" data-id="${escAttr(c.comment_id)}">
             <div class="comment-meta">
               <span class="cls-badge ${escHtml(c.classification)}">${escHtml(c.classification)}</span>
+              ${c.is_reply ? '<span class="cls-badge" style="background:var(--surface-2)">↳ reply</span>' : ''}
+              <span class="cls-badge" style="background:var(--surface-2);text-transform:none">${escHtml(c.status)}</span>
               <strong>${escHtml(c.author||'')}</strong>
               <span style="color:var(--text-dim)">on ${escHtml((c.video_title||'').slice(0,50))}</span>
             </div>
             <div class="comment-text">${escHtml(c.text||'')}</div>
-            <textarea class="comment-reply" rows="2" placeholder="Reply…">${escHtml(c.draft_reply||'')}</textarea>
-            <div class="output-actions">
-              <button class="btn btn-sm btn-green" onclick="postComment(this)">✓ Post reply</button>
-              <button class="btn btn-sm btn-outline" onclick="skipComment(this)">Skip</button>
-              <span class="comment-status" style="font-size:0.8rem;"></span>
-            </div>
-          </div>`).join('');
+            ${isPosted
+              ? `<div class="info-note" style="margin:6px 0 0">Replied: “${escHtml(c.draft_reply||'')}”</div>`
+              : `<textarea class="comment-reply" rows="2" placeholder="Type a reply…">${escHtml(c.draft_reply||'')}</textarea>
+                 <div class="output-actions">
+                   <button class="btn btn-sm btn-green" onclick="postComment(this)">✓ Post reply</button>
+                   ${c.status !== 'skipped' ? '<button class="btn btn-sm btn-outline" onclick="skipComment(this)">Skip</button>' : ''}
+                   <span class="comment-status" style="font-size:0.8rem;"></span>
+                 </div>`}
+          </div>`; }).join('');
       } catch (err) {
         body.innerHTML = `<div class="empty-state" style="color:var(--red)">Failed: ${escHtml(err.message)}</div>`;
       }
