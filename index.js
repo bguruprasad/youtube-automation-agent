@@ -225,7 +225,23 @@ class YouTubeAutomationAgent {
         let grandTotal = 0;
         for (const r of rows) { series[r.category][idx[r.date]] = r.amount; totalsByCategory[r.category] += r.amount; grandTotal += r.amount; }
         for (const c of categories) totalsByCategory[c] = Number(totalsByCategory[c].toFixed(4));
-        res.json({ success: true, days, dates, categories, series, totalsByCategory, grandTotal: Number(grandTotal.toFixed(4)) });
+
+        // Provider split (OpenAI vs Replicate vs ElevenLabs): per-day series +
+        // totals, aligned to the same `dates` axis.
+        const provRows = await this.db.getDailyCostsByProvider(days);
+        const providers = [...new Set(provRows.map(r => r.provider))].sort();
+        const providerSeries = {}; const totalsByProvider = {};
+        for (const pr of providers) { providerSeries[pr] = dates.map(() => 0); totalsByProvider[pr] = 0; }
+        for (const r of provRows) {
+          if (idx[r.date] == null) continue;
+          providerSeries[r.provider][idx[r.date]] = r.amount;
+          totalsByProvider[r.provider] += r.amount;
+        }
+        for (const pr of providers) totalsByProvider[pr] = Number(totalsByProvider[pr].toFixed(4));
+
+        res.json({ success: true, days, dates, categories, series, totalsByCategory,
+          providers, providerSeries, totalsByProvider,
+          grandTotal: Number(grandTotal.toFixed(4)) });
       } catch (error) {
         res.status(500).json({ success: false, error: error.message });
       }
@@ -669,9 +685,19 @@ class YouTubeAutomationAgent {
       const fsp = require('fs').promises;
       const scriptPath = path.join(baseDir, folder, 'script.json');
       const s = JSON.parse(await fsp.readFile(scriptPath, 'utf8'));
-      const total = s.cost && typeof s.cost.total === 'number' ? s.cost.total : 0;
-      if (total > 0) {
-        await this.db.recordCost({ category, amount: total, detail: s.title || folder, ref: folder });
+      const cost = s.cost || {};
+      const total = typeof cost.total === 'number' ? cost.total : 0;
+      if (total <= 0) return;
+      // Record ONE ledger row per provider (openai | replicate | …) so vendor
+      // spend can be reported separately. Idempotent per (folder, category,
+      // provider). If a folder predates byProvider, fall back to a single
+      // openai-tagged row so nothing is lost.
+      const byProvider = cost.byProvider && Object.keys(cost.byProvider).length
+        ? cost.byProvider
+        : { openai: total };
+      for (const [provider, amount] of Object.entries(byProvider)) {
+        if (!(amount > 0)) continue;
+        await this.db.recordCost({ category, amount, detail: s.title || folder, ref: folder, provider });
       }
     } catch (e) {
       this.logger.warn(`Ledger record failed for ${folder}: ${e.message}`);

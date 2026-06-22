@@ -68,15 +68,19 @@ class CostMeter {
   // Serializable summary written into script.json.
   summary() {
     const byType = {};
+    const byProvider = {};
     let total = 0;
     for (const it of this.items) {
       byType[it.type] = Number(((byType[it.type] || 0) + it.cost).toFixed(4));
+      const prov = it.provider || 'openai';
+      byProvider[prov] = Number(((byProvider[prov] || 0) + it.cost).toFixed(4));
       total += it.cost;
     }
     return {
       total: Number(total.toFixed(4)),
       currency: 'USD',
       byType,                 // { image, tts, llm }
+      byProvider,             // { openai, replicate, elevenlabs } — vendor split
       items: this.items,      // detailed line items
       meteredAt: new Date().toISOString(),
       note: 'Estimated from published API rates; ElevenLabs TTS billed via credits (not included in $).',

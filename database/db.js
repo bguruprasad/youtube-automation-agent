@@ -205,6 +205,7 @@ class Database {
         amount REAL NOT NULL DEFAULT 0,
         detail TEXT,
         ref TEXT,
+        provider TEXT DEFAULT 'openai',
         created_at TEXT DEFAULT CURRENT_TIMESTAMP
       )`,
 
@@ -263,11 +264,15 @@ class Database {
       await this.executeQuery(tableQuery);
     }
 
-    // Unique ref per category so the same spend can't be ledgered twice
-    // (backfill + live recording are both idempotent). NULL refs are allowed
-    // and not deduped (SQLite treats NULLs as distinct in UNIQUE indexes).
+    // Migrate older DBs: add the provider column (idempotent).
+    await this.executeQuery("ALTER TABLE cost_ledger ADD COLUMN provider TEXT DEFAULT 'openai'").catch(() => {});
+
+    // Unique per (ref, category, PROVIDER) so the same folder can carry separate
+    // openai/replicate rows without either being deduped against the other.
+    // Replaces the older (ref, category) index. NULL refs stay distinct.
+    await this.executeQuery('DROP INDEX IF EXISTS idx_cost_ref').catch(() => {});
     await this.executeQuery(
-      'CREATE UNIQUE INDEX IF NOT EXISTS idx_cost_ref ON cost_ledger(ref, category)'
+      'CREATE UNIQUE INDEX IF NOT EXISTS idx_cost_ref ON cost_ledger(ref, category, provider)'
     ).catch(() => {});
 
     // Dedup notifications by key (NULL keys stay distinct → not deduped).
@@ -708,14 +713,14 @@ class Database {
   // Record a spend event in the cost ledger. Idempotent when `ref` is given
   // (INSERT OR IGNORE on the unique (ref, category) index), so backfills and
   // retries don't double-count. `date` defaults to today (YYYY-MM-DD, local).
-  async recordCost({ category, amount, detail = null, ref = null, date = null }) {
+  async recordCost({ category, amount, detail = null, ref = null, date = null, provider = 'openai' }) {
     if (!category || !(amount >= 0)) return { skipped: true };
     const d = date || (() => { const t = new Date(); const p = n => String(n).padStart(2,'0');
       return `${t.getFullYear()}-${p(t.getMonth()+1)}-${p(t.getDate())}`; })();
     const sql = ref
-      ? 'INSERT OR IGNORE INTO cost_ledger (date, category, amount, detail, ref) VALUES (?,?,?,?,?)'
-      : 'INSERT INTO cost_ledger (date, category, amount, detail, ref) VALUES (?,?,?,?,NULL)';
-    const params = ref ? [d, category, amount, detail, ref] : [d, category, amount, detail];
+      ? 'INSERT OR IGNORE INTO cost_ledger (date, category, amount, detail, ref, provider) VALUES (?,?,?,?,?,?)'
+      : 'INSERT INTO cost_ledger (date, category, amount, detail, ref, provider) VALUES (?,?,?,?,NULL,?)';
+    const params = ref ? [d, category, amount, detail, ref, provider] : [d, category, amount, detail, provider];
     return this.executeQuery(sql, params);
   }
 
@@ -753,6 +758,18 @@ class Database {
       `SELECT date, category, ROUND(SUM(amount),4) AS amount
        FROM cost_ledger WHERE date >= ?
        GROUP BY date, category ORDER BY date ASC`, [sinceStr]);
+  }
+
+  // Daily spend grouped by date + PROVIDER (openai | replicate | elevenlabs),
+  // for the last N days. Returns rows: { date, provider, amount }.
+  async getDailyCostsByProvider(days = 30) {
+    const since = new Date(Date.now() - days * 864e5);
+    const p = n => String(n).padStart(2,'0');
+    const sinceStr = `${since.getFullYear()}-${p(since.getMonth()+1)}-${p(since.getDate())}`;
+    return this.getAllRows(
+      `SELECT date, COALESCE(provider,'openai') AS provider, ROUND(SUM(amount),4) AS amount
+       FROM cost_ledger WHERE date >= ?
+       GROUP BY date, provider ORDER BY date ASC`, [sinceStr]);
   }
 
   async close() {

@@ -478,6 +478,8 @@
     /* Costs */
     #costs-chart svg rect { transition: opacity 0.15s; }
     #costs-chart svg rect:hover { opacity: 0.8; }
+    .cost-section-label { font-size: 0.78rem; color: var(--text-dim); text-transform: uppercase;
+      letter-spacing: 0.04em; margin: 16px 0 8px; }
     .cost-legend { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 12px; font-size: 0.82rem; color: var(--text-dim); }
     .cost-legend span { display: flex; align-items: center; gap: 6px; text-transform: capitalize; }
     .cost-legend i { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
@@ -1641,6 +1643,9 @@
     // --- Costs (daily spend chart, hand-rendered SVG; no external deps) ---
     const COST_COLORS = { video:'#6c7aed', short:'#c084fc', match_recap:'#34d399', engagement:'#fbbf24', other:'#8b90a0' };
     const costColor = (c) => COST_COLORS[c] || '#8b90a0';
+    const PROVIDER_COLORS = { openai:'#10a37f', replicate:'#ef4444', elevenlabs:'#f59e0b' };
+    const providerColor = (p) => PROVIDER_COLORS[p] || '#8b90a0';
+    const providerLabel = (p) => ({ openai:'OpenAI', replicate:'Replicate (Flux)', elevenlabs:'ElevenLabs' }[p] || p);
 
     async function loadCosts() {
       const summary = document.getElementById('costs-summary');
@@ -1662,10 +1667,16 @@
         })();
         const catCards = d.categories.map(c =>
           `<div class="stat-card"><div class="stat-num" style="color:${costColor(c)}">$${(d.totalsByCategory[c]||0).toFixed(2)}</div><div class="stat-lbl">${escHtml(c.replace('_',' '))}</div></div>`).join('');
+        // By-vendor cards (OpenAI vs Replicate/Flux vs ElevenLabs).
+        const provs = d.providers || [];
+        const provCards = provs.map(p =>
+          `<div class="stat-card"><div class="stat-num" style="color:${providerColor(p)}">$${(d.totalsByProvider[p]||0).toFixed(2)}</div><div class="stat-lbl">${escHtml(providerLabel(p))}</div></div>`).join('');
+
         summary.innerHTML = `<div class="stat-grid">
           <div class="stat-card"><div class="stat-num">$${d.grandTotal.toFixed(2)}</div><div class="stat-lbl">Total (${days}d)</div></div>
           <div class="stat-card"><div class="stat-num">$${weekTotal.toFixed(2)}</div><div class="stat-lbl">Last 7 days</div></div>
-          ${catCards}</div>`;
+          ${catCards}</div>
+          ${provs.length ? `<div class="cost-section-label">By vendor</div><div class="stat-grid">${provCards}</div>` : ''}`;
 
         // Stacked bar chart (SVG). One bar per date, stacked by category.
         const W=Math.max(d.dates.length*42, 320), H=300, padL=46, padB=46, padT=10;
