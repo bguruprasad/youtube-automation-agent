@@ -16,7 +16,11 @@ class Logger {
       format: winston.format.combine(
         winston.format.timestamp(),
         winston.format.errors({ stack: true }),
-        winston.format.json()
+        // Emit timestamp & level FIRST in each JSON line so logs read
+        // chronologically left-to-right (no scrolling past the message to find
+        // the time). Still valid JSON / machine-parseable.
+        winston.format.printf(({ timestamp, level, component, message, stack, ...rest }) =>
+          JSON.stringify({ timestamp, level, component, message: stack || message, ...rest }))
       ),
       defaultMeta: { component: this.component },
       transports: [
