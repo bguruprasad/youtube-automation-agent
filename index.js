@@ -551,7 +551,7 @@ class YouTubeAutomationAgent {
         for (let i = 0; i < shortsConfig.imageCount; i++) {
           const assets = await this.agents.production.aiVideoGenerator.generateVisualAssets(
             visualPrompt, 'cinematic', 1,
-            { size: shortsConfig.imageSize, quality: shortsConfig.imageQuality }
+            { size: shortsConfig.imageSize, quality: shortsConfig.imageQuality, format: 'short' }
           );
           images.push(...assets);
         }
@@ -762,7 +762,7 @@ class YouTubeAutomationAgent {
         const images = [];
         for (let i = 0; i < shortsConfig.imageCount; i++) {
           const a = await gen.generateVisualAssets(visualPrompt, 'cinematic', 1,
-            { size: shortsConfig.imageSize, quality: shortsConfig.imageQuality });
+            { size: shortsConfig.imageSize, quality: shortsConfig.imageQuality, format: 'short' });
           images.push(...a);
         }
         const seo = this._buildMatchSeo(match, script, { isShort: true });
@@ -792,7 +792,7 @@ class YouTubeAutomationAgent {
         const sections = script.mainContent.sections;
         const images = [];
         for (let i = 0; i < sections.length; i++) {
-          const a = await gen.generateVisualAssets(visualPrompt, 'cinematic', 1, { size: '1536x1024', quality: 'medium' });
+          const a = await gen.generateVisualAssets(visualPrompt, 'cinematic', 1, { size: '1536x1024', quality: 'medium', format: 'long' });
           for (let j = 0; j < a.length; j++) {
             const dest = path.join(assetsDir, `visual_${images.length + 1}.png`);
             await fsp.copyFile(a[j], dest); images.push(dest);

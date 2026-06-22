@@ -299,6 +299,17 @@ class AIVideoGenerator {
     return h > w ? '9:16' : (w > h ? '16:9' : '1:1');
   }
 
+  // Resolve the Flux output megapixels for this generation, honouring (in order):
+  // an explicit opts.megapixels, the per-format env (FLUX_MEGAPIXELS_SHORT /
+  // FLUX_MEGAPIXELS_LONG via opts.format), the global FLUX_MEGAPIXELS, then 1.
+  // Lets Shorts and longs be tuned independently later without code changes.
+  _fluxMegapixels(opts = {}) {
+    if (opts.megapixels) return String(opts.megapixels);
+    const fmt = opts.format === 'short' ? 'SHORT' : opts.format === 'long' ? 'LONG' : null;
+    if (fmt && process.env[`FLUX_MEGAPIXELS_${fmt}`]) return process.env[`FLUX_MEGAPIXELS_${fmt}`];
+    return process.env.FLUX_MEGAPIXELS || '1';
+  }
+
   // Generate scene images via Flux on Replicate (default flux-2-pro). Returns
   // saved PNG paths (same contract as the gpt-image-1 path). Throws on failure
   // so the caller can fall back.
@@ -308,7 +319,10 @@ class AIVideoGenerator {
   async _generateFluxAssets(prompt, style, imageOpts = {}) {
     const model = process.env.FLUX_MODEL || 'black-forest-labs/flux-2-pro';
     const aspect = this._fluxAspectRatio(imageOpts.size);
-    const megapixels = process.env.FLUX_MEGAPIXELS || '1';
+    // Megapixels resolved per-format: an explicit imageOpts.megapixels wins,
+    // else the format-specific env (FLUX_MEGAPIXELS_SHORT / _LONG), else the
+    // global FLUX_MEGAPIXELS, else 1. Both default to 1 (quality-first).
+    const megapixels = this._fluxMegapixels(imageOpts);
     const fullPrompt = this.enhanceVisualPrompt(prompt, style);
     this.logger.info(`Generating visual asset via Flux (${model}, ${aspect}, ${megapixels}MP)`);
 
