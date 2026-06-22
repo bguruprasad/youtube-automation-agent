@@ -319,49 +319,95 @@ class AIVideoGenerator {
   async _generateFluxAssets(prompt, style, imageOpts = {}) {
     const model = process.env.FLUX_MODEL || 'black-forest-labs/flux-2-pro';
     const aspect = this._fluxAspectRatio(imageOpts.size);
-    // Megapixels resolved per-format: an explicit imageOpts.megapixels wins,
-    // else the format-specific env (FLUX_MEGAPIXELS_SHORT / _LONG), else the
-    // global FLUX_MEGAPIXELS, else 1. Both default to 1 (quality-first).
     const megapixels = this._fluxMegapixels(imageOpts);
     const fullPrompt = this.enhanceVisualPrompt(prompt, style);
-    this.logger.info(`Generating visual asset via Flux (${model}, ${aspect}, ${megapixels}MP)`);
 
+    // Flux occasionally renders a multi-panel COLLAGE/montage despite the prompt.
+    // Generate, then detect collage seams; if found, retry (each attempt is a
+    // fresh seed). Cap attempts so a persistent case still returns the last image.
+    const maxAttempts = Math.max(1, parseInt(process.env.FLUX_COLLAGE_RETRIES || '2') + 1);
+    let imagePath = null;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      this.logger.info(`Generating visual asset via Flux (${model}, ${aspect}, ${megapixels}MP) attempt ${attempt}/${maxAttempts}`);
+      imagePath = await this._fluxGenerateOnce(fullPrompt, aspect, megapixels);
+
+      // Meter every billed attempt (a discarded collage still costs).
+      if (this.costMeter) {
+        const base = parseFloat(process.env.FLUX_RUN_RATE || '0.015');
+        const perMp = parseFloat(process.env.FLUX_MP_RATE || '0.015');
+        const mp = parseFloat(megapixels) || 1;
+        this.costMeter.recordFlatImage(base + perMp * mp, {
+          label: 'Scene image (Flux)', detail: `${aspect} ${mp}MP ${model}${attempt > 1 ? ' (retry)' : ''}` });
+      }
+
+      const collage = await this._looksLikeCollage(imagePath);
+      if (!collage) { this.logger.info(`Generated 1 visual asset (Flux)`); return [imagePath]; }
+      this.logger.warn(`Flux output looks like a collage (attempt ${attempt}); ${attempt < maxAttempts ? 'retrying' : 'keeping last (out of retries)'}`);
+      if (attempt < maxAttempts) { try { await fs.unlink(imagePath); } catch {} }
+    }
+    return [imagePath];
+  }
+
+  // One Flux generation → saved PNG path. Throws on failure (caller falls back).
+  async _fluxGenerateOnce(fullPrompt, aspect, megapixels) {
+    const model = process.env.FLUX_MODEL || 'black-forest-labs/flux-2-pro';
     const output = await this.replicate.run(model, {
       input: {
         prompt: fullPrompt,
         aspect_ratio: aspect,
-        megapixels,              // "1" | "0.25"; flux-2-pro accepts a target MP
+        megapixels,
         output_format: 'png',
-        // 1 = strictest content filter (matches the tested image). NOTE: this
-        // controls moderation only, not prompt-adherence; lower = more refusals.
         safety_tolerance: parseInt(process.env.FLUX_SAFETY_TOLERANCE || '1'),
-        // OFF by default: upsampling auto-rewrites the prompt and was producing
-        // 4-panel collages and overriding the specified kit. We compose a rich
-        // prompt ourselves (buildSceneImagePrompt), so let the model follow it
-        // literally. Re-enable via FLUX_PROMPT_UPSAMPLING=true if desired.
         prompt_upsampling: process.env.FLUX_PROMPT_UPSAMPLING === 'true',
       },
     });
-
-    // Replicate returns a URL string, an array of URLs, or a FileOutput with .url().
     let url = Array.isArray(output) ? output[0] : output;
     if (url && typeof url.url === 'function') url = url.url();
     url = String(url);
     if (!/^https?:\/\//.test(url)) throw new Error(`Unexpected Flux output: ${url.slice(0, 80)}`);
-
     const imagePath = path.join(__dirname, '..', 'data', 'assets', `visual_${Date.now()}_0.png`);
     await fs.mkdir(path.dirname(imagePath), { recursive: true });
     await this.downloadImage(url, imagePath);
+    return imagePath;
+  }
 
-    if (this.costMeter) {
-      const base = parseFloat(process.env.FLUX_RUN_RATE || '0.015');     // per run
-      const perMp = parseFloat(process.env.FLUX_MP_RATE || '0.015');     // per output MP
-      const mp = parseFloat(megapixels) || 1;
-      this.costMeter.recordFlatImage(base + perMp * mp, {
-        label: 'Scene image (Flux)', detail: `${aspect} ${mp}MP ${model}` });
+  // Heuristic collage detector: a panel collage has near-uniform, very-dark/flat
+  // DIVIDER lines spanning the full width or height at interior positions (the
+  // gutter between panels). We scan interior rows/columns for lines whose pixels
+  // are almost all dark and low-variance; 1+ such full-span seam ⇒ collage.
+  // Returns false on any error (fail-open: never block a generation on detection).
+  async _looksLikeCollage(imagePath) {
+    try {
+      const sharp = require('sharp');
+      const TARGET = 200; // downscale for a fast scan
+      const { data, info } = await sharp(imagePath)
+        .greyscale().resize(TARGET, TARGET, { fit: 'fill' })
+        .raw().toBuffer({ resolveWithObject: true });
+      const W = info.width, H = info.height;
+      const at = (x, y) => data[y * W + x];
+
+      // A "seam" line: >=90% of its pixels are dark (<40) AND the line is flat
+      // (low spread). Only count interior lines (avoid the natural dark border).
+      const isSeam = (vals) => {
+        let dark = 0, min = 255, max = 0;
+        for (const v of vals) { if (v < 40) dark++; if (v < min) min = v; if (v > max) max = v; }
+        return dark / vals.length >= 0.9 && (max - min) <= 60;
+      };
+      const margin = Math.floor(0.12 * Math.max(W, H)); // ignore outer 12% (borders)
+      let seams = 0;
+      for (let y = margin; y < H - margin; y++) {
+        const row = []; for (let x = 0; x < W; x++) row.push(at(x, y));
+        if (isSeam(row)) { seams++; y += 3; } // skip a few px so one thick seam counts once
+      }
+      for (let x = margin; x < W - margin; x++) {
+        const col = []; for (let y = 0; y < H; y++) col.push(at(x, y));
+        if (isSeam(col)) { seams++; x += 3; }
+      }
+      return seams >= 1;
+    } catch (e) {
+      this.logger.warn(`Collage detection skipped: ${e.message}`);
+      return false;
     }
-    this.logger.info('Generated 1 visual asset (Flux)');
-    return [imagePath];
   }
 
   // Build a neutral, safety-system-friendly image prompt from a rejected one:
