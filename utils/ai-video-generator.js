@@ -457,9 +457,35 @@ class AIVideoGenerator {
     return s;
   }
 
+  // Pool of photorealistic photographic styles for football scenes. One is
+  // picked at random per image so the channel doesn't look samey (was always
+  // "cinematic"). All stay believable as real football imagery — no cartoon/
+  // illustration looks that would clash with real players. Each entry is a short
+  // descriptor injected into the prompt. Pin one for testing via SCENE_STYLE.
+  static SCENE_STYLES = {
+    cinematic:        'cinematic film-still look, dramatic floodlights, high contrast, moody atmosphere, 35mm, shallow depth of field',
+    broadcast:        'crisp live sports-broadcast look, bright even stadium lighting, telephoto lens compression, ultra-sharp, vivid green pitch',
+    photojournalistic:'gritty press/photojournalism style, frozen split-second action, natural authentic light, fine photographic grain, Getty/AP sports-photo feel',
+    goldenHour:       'warm golden-hour backlight, low sun, long shadows, glowing rim light, epic and emotive',
+    desaturatedMoody: 'moody desaturated muted palette, deep shadows, single dramatic spotlight, high-contrast and atmospheric',
+    vibrantAction:    'vivid saturated colours, vibrant and energetic, crisp high-clarity action, punchy dynamic feel',
+    wideEpic:         'sweeping wide-angle, vast stadium scale, towering stands, atmospheric haze and light beams, epic sense of occasion',
+  };
+
+  // Pick a scene style key. SCENE_STYLE env pins one (for testing/A-B); otherwise
+  // random per call.
+  _pickSceneStyle() {
+    const keys = Object.keys(AIVideoGenerator.SCENE_STYLES);
+    const pinned = process.env.SCENE_STYLE;
+    if (pinned && AIVideoGenerator.SCENE_STYLES[pinned]) return pinned;
+    return keys[Math.floor(Math.random() * keys.length)];
+  }
+
   buildSceneImagePrompt(subject, opts = {}) {
     const { hint = '', sceneDirection = '', teams = null, kits = null } = opts;
     const flux = this._imageProvider() === 'flux';
+    const styleKey = opts.styleKey || this._pickSceneStyle();
+    const styleDesc = AIVideoGenerator.SCENE_STYLES[styleKey] || AIVideoGenerator.SCENE_STYLES.cinematic;
     const parts = [];
 
     // Lead with the hard single-frame constraint so it dominates the prompt.
@@ -488,8 +514,7 @@ class AIVideoGenerator {
       parts.push(
         'Depict the real, recognizable player accurately wearing the exact kit described above, ' +
         'face clearly visible, captured in ONE clear focal moment of action or celebration, ' +
-        'dynamic motion, shallow depth of field, motion blur. Packed stadium, cinematic floodlights, ' +
-        '35mm film look, high dynamic range. No on-screen captions, no watermarks, no scoreboard graphics.'
+        'dynamic motion. Packed stadium. No on-screen captions, no watermarks, no scoreboard graphics.'
       );
     } else {
       // gpt-image-1: face off-subject, no jersey text (it garbles names).
@@ -497,10 +522,13 @@ class AIVideoGenerator {
         'Frame as a dynamic action shot — a player in motion mid-celebration or mid-play, ' +
         'shot from a distance or from behind / over the shoulder, motion blur, face turned away or not the focus. ' +
         'Plain kits with NO names, NO numbers, NO readable text of any kind on the jerseys. ' +
-        'Packed stadium, cinematic floodlights. No text, no watermarks, no scoreboard graphics, ' +
+        'Packed stadium. No text, no watermarks, no scoreboard graphics, ' +
         'no attempt to depict a specific real identifiable person\'s face.'
       );
     }
+    // Photographic style (randomly picked per image from SCENE_STYLES for visual
+    // variety across the channel; was always "cinematic").
+    parts.push(`Photographic style: ${styleDesc}.`);
     return parts.join(' ');
   }
 
