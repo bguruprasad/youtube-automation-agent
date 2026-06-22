@@ -318,7 +318,9 @@ class AIVideoGenerator {
         aspect_ratio: aspect,
         megapixels,              // "1" | "0.25"; flux-2-pro accepts a target MP
         output_format: 'png',
-        safety_tolerance: parseInt(process.env.FLUX_SAFETY_TOLERANCE || '2'),
+        // 1 = strictest content filter (matches the tested image). NOTE: this
+        // controls moderation only, not prompt-adherence; lower = more refusals.
+        safety_tolerance: parseInt(process.env.FLUX_SAFETY_TOLERANCE || '1'),
         prompt_upsampling: true,
       },
     });
