@@ -466,12 +466,15 @@ class AIVideoGenerator {
     this.logger.info('Generating video from assets...');
 
     try {
-      // Try Replicate for video generation first
-      if (this.replicate && this.replicate.auth) {
+      // The ffmpeg slideshow is our REAL video path (Ken Burns, scoreboard
+      // overlay, captions). The Replicate SVD path is experimental/opt-in and
+      // uses a hardcoded model version — it must NOT auto-engage just because a
+      // Replicate key is present for image generation. Gate it on REPLICATE_VIDEO.
+      if (process.env.REPLICATE_VIDEO === 'true' && this.replicate && this.replicate.auth) {
         return await this.generateReplicateVideo(script, visualAssets, audioPath, outputPath);
       }
 
-      // Fallback to simple slideshow with Playwright
+      // Default: ffmpeg slideshow assembly.
       return await this.generateSlideshowVideo(script, visualAssets, audioPath, outputPath, options);
     } catch (error) {
       this.logger.error('Video generation failed:', error);
