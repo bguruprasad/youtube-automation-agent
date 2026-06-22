@@ -396,35 +396,53 @@ class AIVideoGenerator {
   //
   // opts: { hint, sceneDirection, teams:{home,away}, kits:{home,away} }
   //   kits.home/away are short colour descriptions, e.g. "red and white stripes".
+  // The script's `visuals` field is written for VIDEO editing ("footage of X
+  // scoring each goal, fan reactions, match highlights") — words that make an
+  // image model render a multi-shot MONTAGE/collage. For a single still we strip
+  // the montage-trigger language down to one concrete action.
+  _singleShotDirection(sceneDirection) {
+    let s = String(sceneDirection || '')
+      .replace(/\b(footage|clips?|montage|highlights?|compilation|sequence|series of|various|multiple|several)\b/gi, '')
+      .replace(/\b(each|every)\s+goal\b/gi, 'a goal')
+      .replace(/\b(reactions?|moments?)\b/gi, '')
+      .replace(/[,;].*$/, '')        // keep only the first clause (one action)
+      .replace(/\s+/g, ' ')
+      .trim();
+    return s;
+  }
+
   buildSceneImagePrompt(subject, opts = {}) {
     const { hint = '', sceneDirection = '', teams = null, kits = null } = opts;
     const flux = this._imageProvider() === 'flux';
     const parts = [];
+
+    // Lead with the hard single-frame constraint so it dominates the prompt.
+    parts.push(
+      'A SINGLE photograph (one frame, one continuous scene) — NOT a collage, NOT a grid, ' +
+      'NOT a multi-panel, split-screen, montage or sequence of shots.'
+    );
     parts.push(`Cinematic, photorealistic football (soccer) scene depicting: ${subject}.`);
     if (hint) parts.push(`Context: ${hint}`);
-    if (sceneDirection) parts.push(`Scene: ${sceneDirection}`);
+    const dir = this._singleShotDirection(sceneDirection);
+    if (dir) parts.push(`One single moment: ${dir}.`);
     if (teams && (teams.home || teams.away)) {
       const fixture = [teams.home, teams.away].filter(Boolean).join(' vs ');
       parts.push(`Match: ${fixture}.`);
     }
     if (kits && (kits.home || kits.away)) {
       const k = [];
-      if (kits.home) k.push(`the main team and ALL its teammates wear the SAME ${kits.home} kit`);
+      if (kits.home) k.push(`the main player and ALL his teammates wear the SAME ${kits.home} kit`);
       if (kits.away) k.push(`the opponents and all their teammates wear the SAME ${kits.away} kit`);
-      parts.push(`Team colours (keep each team's players in ONE consistent kit colour, do not mix colours within a team): ${k.join('; ')}.`);
+      parts.push(`CRITICAL kit accuracy (do not substitute a different club's colours, do not mix colours within a team): ${k.join('; ')}.`);
     } else {
       parts.push('All players on the same team wear identical matching kit colours; do not mix kit colours within one team.');
     }
     if (flux) {
       // Flux 2 does real likeness + legible text — depict the player directly.
-      // Force a SINGLE cohesive frame (upsampling-off + explicit anti-collage)
-      // and re-assert the kit (it sometimes drifts to the wrong club colours).
       parts.push(
-        'ONE single cohesive photograph — NOT a collage, NOT a grid, NOT a multi-panel ' +
-        'or split-screen montage; a single continuous scene with one clear focal moment. ' +
         'Depict the real, recognizable player accurately wearing the exact kit described above, ' +
-        'face clearly visible, captured mid-action or celebrating, dynamic motion, ' +
-        'shallow depth of field, motion blur. Packed stadium, cinematic floodlights, ' +
+        'face clearly visible, captured in ONE clear focal moment of action or celebration, ' +
+        'dynamic motion, shallow depth of field, motion blur. Packed stadium, cinematic floodlights, ' +
         '35mm film look, high dynamic range. No on-screen captions, no watermarks, no scoreboard graphics.'
       );
     } else {
