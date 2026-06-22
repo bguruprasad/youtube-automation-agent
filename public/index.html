@@ -1679,16 +1679,21 @@
           ${provs.length ? `<div class="cost-section-label">By vendor</div><div class="stat-grid">${provCards}</div>` : ''}`;
 
         // Stacked bar chart (SVG). One bar per date, stacked by category.
-        const W=Math.max(d.dates.length*42, 320), H=300, padL=46, padB=46, padT=10;
-        const plotH=H-padB-padT, plotW=W-padL-4;
+        // Responsive: the SVG uses a fixed-unit viewBox but scales to fill its
+        // container via width:100% + preserveAspectRatio, so it grows/shrinks
+        // with the page. The viewBox width is sized to the data (so bars stay a
+        // reasonable thickness with many days) and the browser maps it to the
+        // available width.
+        const VBW=Math.max(d.dates.length*42, 640), H=300, padL=46, padB=46, padT=10;
+        const plotH=H-padB-padT, plotW=VBW-padL-4;
         const dayTotals=d.dates.map((_,i)=>d.categories.reduce((s,c)=>s+d.series[c][i],0));
         const maxV=Math.max(...dayTotals, 0.01);
-        const barW=Math.min(28, plotW/d.dates.length*0.7);
         const stepX=plotW/d.dates.length;
+        const barW=Math.min(28, stepX*0.7);
         // y gridlines (4)
         let grid='';
         for(let g=0;g<=4;g++){ const v=maxV*g/4; const y=padT+plotH-(plotH*g/4);
-          grid+=`<line x1="${padL}" y1="${y}" x2="${W}" y2="${y}" stroke="var(--border)" stroke-width="1"/>`+
+          grid+=`<line x1="${padL}" y1="${y}" x2="${VBW}" y2="${y}" stroke="var(--border)" stroke-width="1"/>`+
                 `<text x="${padL-6}" y="${y+4}" text-anchor="end" font-size="10" fill="var(--text-dim)">$${v.toFixed(2)}</text>`; }
         let bars='';
         d.dates.forEach((dt,i)=>{
@@ -1702,7 +1707,7 @@
           const show=d.dates.length<=14||i%Math.ceil(d.dates.length/12)===0;
           if(show) bars+=`<text x="${cx}" y="${H-padB+16}" text-anchor="middle" font-size="9" fill="var(--text-dim)">${dt.slice(5)}</text>`;
         });
-        chart.innerHTML=`<div style="overflow-x:auto"><svg width="${W}" height="${H}" style="max-width:100%;min-width:${Math.min(W,600)}px">${grid}${bars}</svg></div>`;
+        chart.innerHTML=`<svg viewBox="0 0 ${VBW} ${H}" width="100%" height="${H}" preserveAspectRatio="xMidYMid meet" style="display:block">${grid}${bars}</svg>`;
 
         // Legend.
         legend.innerHTML='<div class="cost-legend">'+d.categories.map(c=>
