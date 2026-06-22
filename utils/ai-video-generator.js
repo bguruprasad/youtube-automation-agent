@@ -335,7 +335,11 @@ class AIVideoGenerator {
         // 1 = strictest content filter (matches the tested image). NOTE: this
         // controls moderation only, not prompt-adherence; lower = more refusals.
         safety_tolerance: parseInt(process.env.FLUX_SAFETY_TOLERANCE || '1'),
-        prompt_upsampling: true,
+        // OFF by default: upsampling auto-rewrites the prompt and was producing
+        // 4-panel collages and overriding the specified kit. We compose a rich
+        // prompt ourselves (buildSceneImagePrompt), so let the model follow it
+        // literally. Re-enable via FLUX_PROMPT_UPSAMPLING=true if desired.
+        prompt_upsampling: process.env.FLUX_PROMPT_UPSAMPLING === 'true',
       },
     });
 
@@ -413,11 +417,15 @@ class AIVideoGenerator {
     }
     if (flux) {
       // Flux 2 does real likeness + legible text — depict the player directly.
+      // Force a SINGLE cohesive frame (upsampling-off + explicit anti-collage)
+      // and re-assert the kit (it sometimes drifts to the wrong club colours).
       parts.push(
-        'Depict the real, recognizable player accurately, face clearly visible, ' +
-        'captured mid-action or celebrating, dynamic motion, shallow depth of field, motion blur. ' +
-        'Packed stadium, cinematic floodlights, 35mm film look, high dynamic range. ' +
-        'No on-screen captions, no watermarks, no scoreboard graphics.'
+        'ONE single cohesive photograph — NOT a collage, NOT a grid, NOT a multi-panel ' +
+        'or split-screen montage; a single continuous scene with one clear focal moment. ' +
+        'Depict the real, recognizable player accurately wearing the exact kit described above, ' +
+        'face clearly visible, captured mid-action or celebrating, dynamic motion, ' +
+        'shallow depth of field, motion blur. Packed stadium, cinematic floodlights, ' +
+        '35mm film look, high dynamic range. No on-screen captions, no watermarks, no scoreboard graphics.'
       );
     } else {
       // gpt-image-1: face off-subject, no jersey text (it garbles names).
