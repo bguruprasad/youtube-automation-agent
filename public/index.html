@@ -135,6 +135,8 @@
       align-items: center;
       gap: 8px;
     }
+    .collapse-chevron { font-size: 0.7rem; color: var(--text-dim); transition: transform 0.15s; display: inline-block; }
+    .collapse-chevron.collapsed { transform: rotate(-90deg); }
 
     /* Inputs & Buttons */
     input[type="text"] {
@@ -633,7 +635,9 @@
     <div class="tab-panel" id="tab-analytics" style="display:none;">
     <div class="section">
       <div class="section-title" style="justify-content:space-between;">
-        <span>💰 Monetization Progress</span>
+        <span style="cursor:pointer;display:flex;align-items:center;gap:8px;" onclick="toggleCollapse('monetization')">
+          <span id="monetization-chevron" class="collapse-chevron">▼</span>💰 Monetization Progress
+        </span>
         <button class="btn btn-sm btn-outline" onclick="loadMonetization()">Refresh</button>
       </div>
       <div id="monetization-body">
@@ -1458,7 +1462,23 @@
         </div>`;
     }
 
+    // Collapse/expand a section by key (chevron at id="<key>-chevron", body at
+    // id="<key>-body"). State persists in localStorage.
+    function toggleCollapse(key, force) {
+      const body = document.getElementById(key + '-body');
+      const chevron = document.getElementById(key + '-chevron');
+      if (!body) return;
+      const collapsed = force != null ? force : body.style.display !== 'none';
+      body.style.display = collapsed ? 'none' : '';
+      if (chevron) chevron.classList.toggle('collapsed', collapsed);
+      try { localStorage.setItem('collapse:' + key, collapsed ? '1' : '0'); } catch {}
+    }
+    function restoreCollapse(key) {
+      try { if (localStorage.getItem('collapse:' + key) === '1') toggleCollapse(key, true); } catch {}
+    }
+
     async function loadMonetization() {
+      restoreCollapse('monetization');
       const body = document.getElementById('monetization-body');
       body.innerHTML = '<div class="spinner-wrap" style="margin-top:8px"><div class="spinner"></div><span>Checking eligibility…</span></div>';
       try {
