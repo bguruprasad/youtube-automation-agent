@@ -1038,8 +1038,14 @@ class AIVideoGenerator {
       const addCrest = async (crestPath, centerX) => {
         if (!crestPath) return;
         try {
+          // 'contain' (not 'inside') pads each crest into a fixed crestSize×
+          // crestSize transparent square. Flags have different aspect ratios
+          // (e.g. a square PNG vs a wide SVG flag); with 'inside' they'd have
+          // different output HEIGHTS, so placing both at the same `top` made
+          // their centres misalign. A fixed square keeps both vertically centred
+          // on the same line.
           const resized = await sharp(crestPath)
-            .resize(crestSize, crestSize, { fit: 'inside', background: { r: 0, g: 0, b: 0, alpha: 0 } })
+            .resize(crestSize, crestSize, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
             .png().toBuffer();
           layers.push({ input: resized, top: Math.round(crestTop), left: Math.round(centerX - crestSize / 2) });
         } catch (e) { this.logger.warn(`Crest render skipped: ${e.message}`); }
