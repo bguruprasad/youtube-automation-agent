@@ -20,10 +20,14 @@ class CommentEngine {
   }
 
   // Video IDs we've uploaded, from the youtube_upload.json markers (same source
-  // the analytics report uses). Returns [{ videoId, title }].
+  // the analytics report uses). Returns [{ videoId, title, folder, kind }],
+  // sorted NEWEST FIRST so the most recent uploads are always scanned first
+  // (folder names are timestamp-prefixed YYYY-MM-DD_HH-MM-SS, so a reverse
+  // lexical sort is chronological). Previously this returned all longs then all
+  // shorts in oldest-first order, so recent Shorts fell outside the scan window
+  // and their comments were never ingested.
   _ownVideos() {
     const { outputRoot, shortsRoot } = require('./paths');
-    const root = outputRoot();
     const out = [];
     const scan = (dir, kind) => {
       let entries = [];
@@ -36,12 +40,14 @@ class CommentEngine {
           if (!marker.videoId) continue;
           let title = e.name;
           try { title = JSON.parse(fs.readFileSync(path.join(folder, 'script.json'), 'utf8')).title || title; } catch {}
-          out.push({ videoId: marker.videoId, title, kind });
+          out.push({ videoId: marker.videoId, title, kind, folder: e.name });
         } catch { /* not uploaded */ }
       }
     };
-    scan(root, 'long');
+    scan(outputRoot(), 'long');
     scan(shortsRoot(), 'short');
+    // Newest first by folder timestamp prefix.
+    out.sort((a, b) => (a.folder < b.folder ? 1 : a.folder > b.folder ? -1 : 0));
     return out;
   }
 

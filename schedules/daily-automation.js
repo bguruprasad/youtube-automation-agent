@@ -499,7 +499,7 @@ class DailyAutomation {
       const eng = this.app && this.app.commentEngine;
       if (!eng || !eng.youtube) { this.logger.warn('Comment engagement: engine/YouTube not available'); return; }
       this.logger.info('Comment engagement: scanning for new comments...');
-      const r = await eng.ingest({ maxVideos: 20, maxPerRun: 50 });
+      const r = await eng.ingest({ maxVideos: 40, maxPerRun: 50 });
       this.logger.success(`Comment engagement: ${r.newComments} new across ${r.scannedVideos} videos ${JSON.stringify(r.byClass)}`);
       await this.logAutomationEvent('comment_engagement', 'success', { newComments: r.newComments, byClass: r.byClass });
     } catch (error) {

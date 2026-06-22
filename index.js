@@ -291,7 +291,7 @@ class YouTubeAutomationAgent {
       try {
         if (!this.commentEngine || !this.commentEngine.youtube) throw new Error('Comment engine/YouTube not configured');
         const result = await this.commentEngine.ingest({
-          maxVideos: parseInt(req.body?.maxVideos) || 15,
+          maxVideos: parseInt(req.body?.maxVideos) || 40,
           maxPerRun: parseInt(req.body?.maxPerRun) || 40,
         });
         res.json({ success: true, result });
