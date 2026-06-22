@@ -712,11 +712,16 @@ class YouTubeAutomationAgent {
       wc.getCrest(match.homeCrestUrl).catch(() => null),
       wc.getCrest(match.awayCrestUrl).catch(() => null),
     ]);
+    // Include the tournament year (from the match date) for consistency with
+    // the recap title, e.g. "FIFA World Cup 2026 · GROUP STAGE".
+    const wcYear = match.utcDate ? new Date(match.utcDate).getUTCFullYear() : null;
+    let comp = match.competition || 'FIFA World Cup';
+    if (wcYear && !comp.includes(String(wcYear))) comp = `${comp} ${wcYear}`;
     return {
       homeTeam: match.homeTeam, awayTeam: match.awayTeam,
       homeScore: match.homeScore, awayScore: match.awayScore,
       homeCrest, awayCrest,
-      label: `${match.competition || 'FIFA World Cup'}${match.stage ? ' · ' + String(match.stage).replace(/_/g, ' ') : ''}`,
+      label: `${comp}${match.stage ? ' · ' + String(match.stage).replace(/_/g, ' ') : ''}`,
     };
   }
 

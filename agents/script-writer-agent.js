@@ -322,7 +322,13 @@ Rules:
   async generateMatchRecapScript(match, { format = 'long' } = {}) {
     const isShort = format === 'short';
     const fixture = `${match.homeTeam} ${match.homeScore}-${match.awayScore} ${match.awayTeam}`;
-    const ctx = `${match.competition || 'FIFA World Cup'}${match.stage ? ' (' + String(match.stage).replace(/_/g, ' ').toLowerCase() + ')' : ''}`;
+    // Include the tournament year (derived from the match date, so it stays
+    // correct for any edition) so titles read e.g. "FIFA World Cup 2026" rather
+    // than an undated "FIFA World Cup".
+    const wcYear = match.utcDate ? new Date(match.utcDate).getUTCFullYear() : null;
+    let comp = match.competition || 'FIFA World Cup';
+    if (wcYear && !comp.includes(String(wcYear))) comp = `${comp} ${wcYear}`;
+    const ctx = `${comp}${match.stage ? ' (' + String(match.stage).replace(/_/g, ' ').toLowerCase() + ')' : ''}`;
 
     const systemPrompt = `You are a football (soccer) match-recap scriptwriter for a YouTube channel. ` +
       `Write an engaging, factual narration recapping a real match result. Output valid JSON only, no markdown. ` +
