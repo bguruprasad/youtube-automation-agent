@@ -721,10 +721,14 @@ class AIVideoGenerator {
         }
 
         // CARD scene: accurate still as a centered card over a blurred clip bed.
-        // On any failure, fall through to the plain still path below.
+        // The overlay (title band or scoreboard) is REBUILT at card dimensions
+        // inside the renderer so its band sits flush at the top of the card (not
+        // floating mid-image). On any failure, fall through to the plain still
+        // path below.
         if (scene.type === 'card') {
           try {
-            await this._renderCardScene(scene.clip, scene.still, clipPath, clipDuration, textOverlay, { width: W, height: H }, i, tempDir);
+            await this._renderCardScene(scene.clip, scene.still, clipPath, clipDuration,
+              { match: options.match, sectionTitle }, { width: W, height: H }, i, tempDir);
             clipPaths.push(clipPath);
             continue;
           } catch (e) {
@@ -1072,7 +1076,7 @@ class AIVideoGenerator {
    * STOCK_CARD_WIDTH_PCT (default 0.65 = 65% of frame width). On any failure the
    * caller falls back to the plain still path.
    */
-  async _renderCardScene(srcClip, stillPath, clipPath, clipDuration, textOverlay, dims, index, tempDir) {
+  async _renderCardScene(srcClip, stillPath, clipPath, clipDuration, overlaySpec, dims, index, tempDir) {
     const { execSync } = require('child_process');
     const W = dims.width || 1920, H = dims.height || 1080, fps = 30;
     const totalFrames = Math.round(clipDuration * fps);
@@ -1086,6 +1090,17 @@ class AIVideoGenerator {
     const card = await this._makeStillCard(stillPath, tempDir, index, cardW, cardH);
     if (!card) throw new Error('card build failed');
 
+    // Rebuild the overlay (scoreboard or title) at CARD dimensions, so its band
+    // sits flush at the top of the card (not floating mid-image like a full-frame
+    // overlay cropped to the card would). overlaySpec = { match?, sectionTitle? }.
+    let cardOverlay = null;
+    if (overlaySpec && overlaySpec.match) {
+      // topFlush: band starts at the card's top edge (no gap above it).
+      cardOverlay = await this._makeScoreboardOverlay(overlaySpec.match, tempDir, `card${index}`, { width: cardW, height: cardH, topFlush: true });
+    } else if (overlaySpec && overlaySpec.sectionTitle) {
+      cardOverlay = await this._makeTextOverlay(overlaySpec.sectionTitle, tempDir, `card${index}`, { width: cardW, height: cardH });
+    }
+
     // Background: lightly blurred + slightly dimmed clip, cover-cropped to frame,
     // faded, looped. Blur is kept modest so the football STILL READS as football
     // behind the card. Tunables: STOCK_BG_BLUR (default 10), STOCK_BG_DIM (0.12).
@@ -1095,26 +1110,35 @@ class AIVideoGenerator {
       `boxblur=${blur}:1,eq=brightness=-${dim},fps=${fps},` +
       `fade=in:0:${Math.min(15, totalFrames)},fade=out:${Math.max(0, totalFrames - 15)}:15`;
     const cx = Math.round((W - card.w) / 2), cy = Math.round((H - card.h) / 2);
+    const cardPad = Math.round((card.w - cardW) / 2); // shadow margin per side
+    const innerX = cx + cardPad;                      // left edge of the still
+    const innerY = cy + cardPad;                      // top edge of the still
     const enc = `-c:v libx264 -preset veryfast -threads 0 -pix_fmt yuv420p -r ${fps}`;
     const timeout = Math.max(120000, Math.ceil(clipDuration) * 8000);
 
-    // Inputs: [0]=clip (looped), [1]=card PNG, [2]=text overlay (optional).
-    // [0]->bg; bg+card -> composited; +text on top.
-    //
-    // The text overlay is a FULL-FRAME PNG with a dark title band spanning the
-    // whole width. On the card composite that band would bleed onto the clip on
-    // either side of the card. So we CROP the text overlay to the card's
-    // horizontal span (cx..cx+card.w) and overlay it at cx — keeping the band
-    // (and text) confined to the card, never on the clip background. The card's
-    // inner image starts `pad` in from card.w, so we inset by that pad too.
+    // Inputs: [0]=clip (looped), [1]=card PNG, [2]=card-sized overlay (optional),
+    // [3]=rounded mask. [0]->bg; bg+card -> [c]; overlay (clipped to the card's
+    // rounded corners so its band top follows the curve) -> on top at the still.
     let cmd;
-    if (textOverlay) {
-      const cardPad = Math.round((card.w - cardW) / 2); // shadow margin per side
-      const innerX = cx + cardPad;                      // left edge of the still itself
-      const innerW = cardW;                             // still width (band span)
-      cmd = `ffmpeg -y -stream_loop -1 -i "${srcClip}" -i "${card.path}" -i "${textOverlay}" -t ${clipDuration} ` +
+    if (cardOverlay) {
+      const radius = Math.round(Math.min(cardW, cardH) * 0.05); // match _makeStillCard
+      // White rounded-rect on BLACK (luma = card silhouette). MULTIPLY the
+      // overlay's own alpha by this so the band keeps its transparency AND is
+      // clipped to the card's rounded corners.
+      const maskSvg = Buffer.from(
+        `<svg width="${cardW}" height="${cardH}"><rect width="${cardW}" height="${cardH}" fill="#000"/>` +
+        `<rect x="0" y="0" width="${cardW}" height="${cardH}" rx="${radius}" ry="${radius}" fill="#fff"/></svg>`
+      );
+      const maskPath = path.join(tempDir, `cardmask_${index}.png`);
+      await sharp(maskSvg).removeAlpha().png().toFile(maskPath);
+      cmd = `ffmpeg -y -stream_loop -1 -i "${srcClip}" -i "${card.path}" -i "${cardOverlay}" -i "${maskPath}" -t ${clipDuration} ` +
         `-filter_complex "[0:v]${bg}[bg];[bg][1:v]overlay=${cx}:${cy}[c];` +
-        `[2:v]crop=${innerW}:ih:${innerX}:0[txt];[c][txt]overlay=${innerX}:0:format=auto" ` +
+        `[2:v]format=rgba,split[txa][txb];` +
+        `[txa]alphaextract[oa];` +
+        `[3:v]format=gray[mk];` +
+        `[oa][mk]blend=all_mode=multiply[a2];` +
+        `[txb][a2]alphamerge[txtr];` +
+        `[c][txtr]overlay=${innerX}:${innerY}:format=auto" ` +
         `${enc} "${clipPath}"`;
     } else {
       cmd = `ffmpeg -y -stream_loop -1 -i "${srcClip}" -i "${card.path}" -t ${clipDuration} ` +
@@ -1270,6 +1294,9 @@ class AIVideoGenerator {
       const W = dims.width || 1920;
       const H = dims.height || 1080;
       const portrait = H > W;
+      // topFlush: anchor the band at the very top (gap = small pad), used by the
+      // card composite so the band starts exactly where the still starts.
+      const topFlush = !!dims.topFlush;
 
       const home = this._escapeXml(String(match.homeTeam || 'Home'));
       const away = this._escapeXml(String(match.awayTeam || 'Away'));
@@ -1289,10 +1316,10 @@ class AIVideoGenerator {
       const PAD_BOTTOM = portrait ? 30 : 32;
       const gapLabelRow = portrait ? 30 : 32;   // label baseline -> row top
       const gapRowName = portrait ? 14 : 16;    // row bottom -> name
-      const NUDGE = portrait ? 28 : 30;         // push crests below score center
+      const NUDGE = portrait ? 4 : 30;          // align crests to the score's optical centre
       const SCORE_CENTER_FACTOR = 0.370;        // measured optical center of digits
 
-      const bandTop = portrait ? Math.round(H * 0.10) : Math.round(H * 0.05);
+      const bandTop = topFlush ? 0 : (portrait ? Math.round(H * 0.10) : Math.round(H * 0.05));
       const cx = W / 2;
       const labelY = bandTop + PAD_TOP + labelSize;            // label baseline
       const rowTop = labelY + (label ? gapLabelRow : 0);

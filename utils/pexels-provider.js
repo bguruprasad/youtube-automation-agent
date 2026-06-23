@@ -205,15 +205,28 @@ async function getClip(query, opts = {}) {
     if (best.yavg >= floor + 40) break; // clearly bright enough; stop probing
   }
 
-  // If nothing cleared the floor, still use the brightest we found (better than
-  // nothing — the caller's blur/dim will tame it), but log it.
+  // STRICT brightness (default ON via PEXELS_STRICT_BRIGHTNESS): only accept a
+  // clip that clears the floor. If none do, return null so the scene falls back
+  // to the (brighter, on-narrative) Flux still — we never ship a dark clip. Set
+  // PEXELS_STRICT_BRIGHTNESS=false to allow the brightest-available as a fallback.
+  const strict = String(process.env.PEXELS_STRICT_BRIGHTNESS || 'true').toLowerCase() === 'true';
+
   if (!best) {
+    if (strict) { if (logger) logger.warn(`Pexels "${query}": no usable clip probed; falling back to still`); return null; }
     const got = await _fetchToFile(candidateUrls[0], target);
     if (got && logger) logger.warn(`Pexels "${query}": no probe succeeded, using first candidate`);
     if (got) _searchCache.set(cacheKey, { at: Date.now(), localPath: got });
     return got;
   }
-  if (best.yavg < floor && logger) logger.warn(`Pexels "${query}": brightest candidate ${best.yavg.toFixed(0)} < floor ${floor} (used anyway)`);
+  if (best.yavg < floor) {
+    try { fs.unlinkSync(best.path); } catch {}
+    if (strict) { if (logger) logger.warn(`Pexels "${query}": brightest ${best.yavg.toFixed(0)} < floor ${floor}; falling back to still`); return null; }
+    if (logger) logger.warn(`Pexels "${query}": brightest ${best.yavg.toFixed(0)} < floor ${floor} (used anyway)`);
+    // non-strict: re-download since we just deleted the probe copy
+    const got = await _fetchToFile(candidateUrls[0], target);
+    if (got) _searchCache.set(cacheKey, { at: Date.now(), localPath: got });
+    return got;
+  }
 
   try { fs.renameSync(best.path, target); } catch { try { fs.copyFileSync(best.path, target); } catch {} }
   _searchCache.set(cacheKey, { at: Date.now(), localPath: target });

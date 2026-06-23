@@ -854,7 +854,11 @@ class YouTubeAutomationAgent {
           images.push(...a);
         }
         const seo = this._buildMatchSeo(match, script, { isShort: true });
-        const r = await this.shortsProducer.produce(script, images, { match: overlay, seo });
+        // Stock clips for recap Shorts use the GLOBAL default (no per-run override
+        // on the scheduled/auto path). The scoreboard overlay coexists with the
+        // clip/card composite (the assembler keeps the full-width scoreboard band).
+        const clipOpts = await this._resolveClipOptions(null);
+        const r = await this.shortsProducer.produce(script, images, { match: overlay, seo, ...clipOpts });
         await this._writeMatchJson(r.folderPath, match);
         await this._ledgerFolderCost(r.folder, 'match_recap', shortsConfig.outputDir);
         await this.db.upsertContent({ folder: r.folder, type: 'match_recap', title: script.title });
