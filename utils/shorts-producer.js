@@ -168,10 +168,12 @@ class ShortsProducer {
     // Stock-clips info for the dashboard (i) panel: counts + per-scene source.
     if (useClips && clipMeta) {
       const clipCount = clipMeta.filter(s => s.type === 'clip').length;
+      const cardCount = clipMeta.filter(s => s.type === 'card').length;
       scriptOut.meta.stockClips = {
         mode: clipMode,
         clipCount,
-        stillCount: clipMeta.length - clipCount,
+        cardCount,
+        stillCount: clipMeta.length - clipCount - cardCount,
         scenes: clipMeta, // [{ type, query }]
       };
     }

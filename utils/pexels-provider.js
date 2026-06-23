@@ -118,6 +118,25 @@ function pickVideoFile(video, { portrait, targetW, targetH }) {
   return files[0].link;
 }
 
+// Measure average luminance (0-255) of the BOTTOM THIRD of a mid-frame of a
+// local clip via ffmpeg signalstats. The bottom third is what sits under the
+// card / where football action reads, and dark-bottomed clips are the ones that
+// don't feel like a match is happening. Returns a number, or null on failure.
+function probeBottomBrightness(clipPath) {
+  return new Promise((resolve) => {
+    const { execFile } = require('child_process');
+    // crop=iw:ih/3:0:ih*2/3 -> bottom third; sample one frame ~2s in.
+    const args = ['-hide_banner', '-ss', '2', '-i', clipPath, '-vframes', '1',
+      '-vf', 'crop=iw:ih/3:0:ih*2/3,scale=160:-1,signalstats,metadata=print:key=lavfi.signalstats.YAVG',
+      '-f', 'null', '-'];
+    execFile('ffmpeg', args, { timeout: 15000 }, (err, _so, se) => {
+      if (err) return resolve(null);
+      const m = /YAVG=([0-9.]+)/.exec(se || '');
+      resolve(m ? parseFloat(m[1]) : null);
+    });
+  });
+}
+
 /**
  * Get a local clip path for a search query, cache-first. Downloads + caches on
  * miss. Returns the local .mp4 path or null (caller falls back to a still).
@@ -137,32 +156,68 @@ async function getClip(query, opts = {}) {
   } catch {}
 
   // Resolve the file URL (search cache avoids repeat API calls for same query).
-  let fileUrl = null;
-  const cached = _searchCache.get(query.toLowerCase().trim());
-  if (cached && Date.now() - cached.at < SEARCH_TTL_MS) {
-    fileUrl = cached.fileUrl;
-  } else {
-    const orientation = portrait ? 'portrait' : 'landscape';
-    const url = `${SEARCH_URL}?query=${encodeURIComponent(query)}&orientation=${orientation}&per_page=15&size=medium`;
-    try {
-      const { data } = await getJson(url, key, logger);
-      const candidates = (data.videos || []).filter((v) => (v.duration || 0) >= minSec);
-      for (const v of candidates) {
-        const u = pickVideoFile(v, { portrait, targetW: width, targetH: height });
-        if (u) { fileUrl = u; break; }
-      }
-      _searchCache.set(query.toLowerCase().trim(), { at: Date.now(), fileUrl });
-      if (logger) logger.info(`Pexels search "${query}": ${candidates.length} candidate(s)${fileUrl ? '' : ' (no usable file)'}`);
-    } catch (e) {
-      if (logger) logger.warn(`Pexels search failed for "${query}": ${e.message}`);
-      return null;
-    }
+  // We pick the BRIGHTEST candidate (bottom-third luminance) above a floor, so
+  // dark clips that don't read as football are rejected — Pexels exposes no
+  // brightness metadata, so we sample frames ourselves.
+  const cacheKey = query.toLowerCase().trim();
+  const cached = _searchCache.get(cacheKey);
+  if (cached && Date.now() - cached.at < SEARCH_TTL_MS && cached.localPath && fs.existsSync(cached.localPath)) {
+    return cached.localPath;
   }
-  if (!fileUrl) return null;
 
-  const out = await _fetchToFile(fileUrl, target);
-  if (!out && logger) logger.warn(`Pexels clip download failed for "${query}"`);
-  return out;
+  let candidateUrls = [];
+  try {
+    const orientation = portrait ? 'portrait' : 'landscape';
+    const url = `${SEARCH_URL}?query=${encodeURIComponent(query)}&orientation=${orientation}&per_page=20&size=medium`;
+    const { data } = await getJson(url, key, logger);
+    const candidates = (data.videos || []).filter((v) => (v.duration || 0) >= minSec);
+    for (const v of candidates) {
+      const u = pickVideoFile(v, { portrait, targetW: width, targetH: height });
+      if (u) candidateUrls.push(u);
+    }
+    if (logger) logger.info(`Pexels search "${query}": ${candidateUrls.length} usable candidate(s)`);
+  } catch (e) {
+    if (logger) logger.warn(`Pexels search failed for "${query}": ${e.message}`);
+    return null;
+  }
+  if (!candidateUrls.length) return null;
+
+  // Brightness-aware selection: download up to PROBE_N candidates, measure
+  // bottom-third luminance, keep the brightest that clears the floor. Tunables:
+  //   PEXELS_PROBE_N (default 4), PEXELS_MIN_BRIGHTNESS (default 70, 0-255).
+  const probeN = Math.max(1, parseInt(process.env.PEXELS_PROBE_N || '4'));
+  const floor = parseFloat(process.env.PEXELS_MIN_BRIGHTNESS || '70');
+  const tmpDir = path.join(CLIP_DIR, '.probe');
+  fs.mkdirSync(tmpDir, { recursive: true });
+
+  let best = null; // { path, yavg }
+  for (let i = 0; i < Math.min(probeN, candidateUrls.length); i++) {
+    const tmp = path.join(tmpDir, `cand_${Date.now()}_${i}.mp4`);
+    const got = await _fetchToFile(candidateUrls[i], tmp);
+    if (!got) continue;
+    const yavg = await probeBottomBrightness(got);
+    if (logger) logger.info(`  candidate ${i + 1}: bottom-brightness ${yavg == null ? 'n/a' : yavg.toFixed(0)}`);
+    if (yavg == null) { try { fs.unlinkSync(got); } catch {} continue; }
+    if (!best || yavg > best.yavg) {
+      if (best) { try { fs.unlinkSync(best.path); } catch {} }
+      best = { path: got, yavg };
+    } else { try { fs.unlinkSync(got); } catch {} }
+    if (best.yavg >= floor + 40) break; // clearly bright enough; stop probing
+  }
+
+  // If nothing cleared the floor, still use the brightest we found (better than
+  // nothing — the caller's blur/dim will tame it), but log it.
+  if (!best) {
+    const got = await _fetchToFile(candidateUrls[0], target);
+    if (got && logger) logger.warn(`Pexels "${query}": no probe succeeded, using first candidate`);
+    if (got) _searchCache.set(cacheKey, { at: Date.now(), localPath: got });
+    return got;
+  }
+  if (best.yavg < floor && logger) logger.warn(`Pexels "${query}": brightest candidate ${best.yavg.toFixed(0)} < floor ${floor} (used anyway)`);
+
+  try { fs.renameSync(best.path, target); } catch { try { fs.copyFileSync(best.path, target); } catch {} }
+  _searchCache.set(cacheKey, { at: Date.now(), localPath: target });
+  return target;
 }
 
 module.exports = { getClip };

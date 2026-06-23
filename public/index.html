@@ -1297,13 +1297,15 @@
       // quality with the source footage.
       const sc = meta && meta.stockClips;
       if (sc) {
+        const sceneLabel = (t) => t === 'clip' ? '🎬 clip' : t === 'card' ? '📇 card (still over clip)' : '🖼 still';
         const sceneRows = (sc.scenes || []).map((s, i) =>
           `<tr><td>Scene ${i + 1}</td>` +
-          `<td>${s.type === 'clip' ? '🎬 clip' : '🖼 still'}</td>` +
+          `<td>${sceneLabel(s.type)}</td>` +
           `<td style="color:var(--text-dim)">${escHtml(s.query || '—')}</td></tr>`
         ).join('');
+        const cardCount = (sc.scenes || []).filter(s => s.type === 'card').length;
         html += `<h4 style="margin:16px 0 8px;">Stock clips (${escHtml(sc.mode)})</h4>` +
-          `<p class="info-note" style="margin-bottom:8px;">${sc.clipCount} clip · ${sc.stillCount} still</p>` +
+          `<p class="info-note" style="margin-bottom:8px;">${sc.clipCount} clip · ${cardCount} card · ${sc.stillCount} still</p>` +
           `<table class="info-table"><thead><tr><th>Scene</th><th>Source</th><th>Pexels query</th></tr></thead>` +
           `<tbody>${sceneRows || '<tr><td colspan="3" style="color:var(--text-dim)">—</td></tr>'}</tbody></table>`;
       }

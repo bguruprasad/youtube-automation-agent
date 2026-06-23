@@ -526,6 +526,15 @@ class AIVideoGenerator {
         'no attempt to depict a specific real identifiable person\'s face.'
       );
     }
+    // Structural realism guardrails. Image models often render a broadcast-style
+    // goal with the NET billowing OUTSIDE the frame of the posts/crossbar, or
+    // floating mesh — call it out explicitly so the goal reads correctly.
+    parts.push(
+      'Anatomically and structurally correct: if a goal is shown, the net is attached ' +
+      'inside and behind the goalposts and crossbar and stays within the goal frame ' +
+      '(no net extending past the posts, no floating or detached mesh); correct number ' +
+      'of limbs; realistic stadium geometry.'
+    );
     // Photographic style (randomly picked per image from SCENE_STYLES for visual
     // variety across the channel; was always "cinematic").
     parts.push(`Photographic style: ${styleDesc}.`);
@@ -660,15 +669,18 @@ class AIVideoGenerator {
 
       // OPTIONAL stock-clip layer (Shorts): when options.useClips is set, resolve
       // a real B-roll clip per scene (Pexels), falling back to the Flux still.
-      // sceneVisuals[i] = { type:'clip'|'still', source, query? }. When clips are
-      // off, every scene is its still (unchanged behavior).
+      // sceneVisuals[i] = { type:'clip'|'card'|'still', ... }:
+      //   clip  -> full-screen stock clip (atmosphere beat)
+      //   card  -> accurate Flux still as a centered card over a blurred clip bed (action beat)
+      //   still -> Flux still + Ken Burns (no clip found, or clips off — unchanged)
       let sceneVisuals = validAssets.map((a) => ({ type: 'still', source: a }));
       if (options.useClips) {
         try {
           const resolved = await this._resolveSceneVisuals(script, validAssets, options);
           sceneVisuals = resolved.visuals;
           const clipN = sceneVisuals.filter((s) => s.type === 'clip').length;
-          this.logger.info(`Stock clips (${resolved.mode}): ${clipN}/${sceneVisuals.length} scene(s) use a clip`);
+          const cardN = sceneVisuals.filter((s) => s.type === 'card').length;
+          this.logger.info(`Stock clips (${resolved.mode}): ${clipN} clip + ${cardN} card / ${sceneVisuals.length} scene(s)`);
         } catch (e) {
           this.logger.warn(`Stock-clip resolution failed (${e.message}); using stills`);
         }
@@ -704,6 +716,19 @@ class AIVideoGenerator {
             continue;
           } catch (e) {
             this.logger.warn(`Clip scene ${i} render failed (${e.message}); falling back to still`);
+            if (this._lastClipMeta[i]) this._lastClipMeta[i] = { type: 'still', query: null };
+          }
+        }
+
+        // CARD scene: accurate still as a centered card over a blurred clip bed.
+        // On any failure, fall through to the plain still path below.
+        if (scene.type === 'card') {
+          try {
+            await this._renderCardScene(scene.clip, scene.still, clipPath, clipDuration, textOverlay, { width: W, height: H }, i, tempDir);
+            clipPaths.push(clipPath);
+            continue;
+          } catch (e) {
+            this.logger.warn(`Card scene ${i} render failed (${e.message}); falling back to still`);
             if (this._lastClipMeta[i]) this._lastClipMeta[i] = { type: 'still', query: null };
           }
         }
@@ -870,11 +895,18 @@ class AIVideoGenerator {
   // /generate-short flow resolves that from a DB toggle / per-run override).
 
   /**
-   * Derive a Pexels search query for a scene from the script's OWN visual
-   * direction + keywords, sanitized to GENERIC football terms (no team/player
-   * names — Pexels has no real-player footage and we want copyright-safe,
-   * non-specific B-roll). Deterministic, no LLM cost. Returns a short query
-   * string. `index` rotates a fallback so scenes don't all reuse one clip.
+   * Derive a Pexels search query + BEAT TYPE for a scene from the script's OWN
+   * visual direction + keywords, sanitized to GENERIC football terms (no team/
+   * player names — Pexels has no real-player footage and we want copyright-safe,
+   * non-specific B-roll). Deterministic, no LLM cost.
+   *
+   * Returns { query, beat }:
+   *   beat='atmosphere' -> crowd/celebration/stadium: generic clip is FINE as a
+   *     full-screen visual (nobody expects a specific face in a crowd shot).
+   *   beat='action' -> a specific action (strike, save, dribble): a generic clip
+   *     is OFF-narrative, so the accurate Flux still should lead — we use the
+   *     clip only as a motion BED behind a framed-card composite of the still.
+   * `index` rotates a fallback so scenes don't all reuse one clip.
    */
   _sceneClipQuery(script, index) {
     const sections = (script.mainContent && script.mainContent.sections) || [];
@@ -885,26 +917,33 @@ class AIVideoGenerator {
       Array.isArray(script.keywords) ? script.keywords.join(' ') : '',
     ].filter(Boolean).join(' ').toLowerCase();
 
-    // Strip anything that could be a specific entity (proper-noun-ish words are
-    // dropped); map to a small set of safe, evergreen football B-roll terms.
+    // Map narration cues to safe, evergreen B-roll terms + classify the beat.
+    // ORDER MATTERS: specific actions are checked before generic atmosphere so
+    // "celebrating goal" (action-ish but crowd-safe) lands as atmosphere while
+    // "thunderous strike" lands as action.
+    // Queries bias toward STADIUM / daytime-pitch footage (greener, brighter,
+    // reads as a real match) over tight/dark close-ups. Brightness is further
+    // enforced by the provider's luminance probe.
     const TERMS = [
-      { re: /celebrat|goal|score|cheer/, q: 'soccer players celebrating goal' },
-      { re: /crowd|fans|stadium|stands|supporter/, q: 'football stadium crowd cheering' },
-      { re: /save|keeper|goalkeeper|dive/, q: 'soccer goalkeeper save' },
-      { re: /dribbl|skill|run|sprint|pace|attack/, q: 'soccer player dribbling pitch' },
-      { re: /pass|midfield|build/, q: 'soccer match action pitch' },
-      { re: /night|lights|floodlight/, q: 'football stadium night lights' },
-      { re: /trophy|win|champion|victory/, q: 'soccer trophy celebration' },
+      { re: /save|keeper|goalkeeper|dive/,                 q: 'soccer goalkeeper stadium pitch',  beat: 'action' },
+      { re: /strike|shot|volley|header|finish|score(?!board)/, q: 'soccer player shooting stadium pitch', beat: 'action' },
+      { re: /dribbl|skill|run|sprint|pace|solo/,           q: 'soccer player running stadium pitch', beat: 'action' },
+      { re: /pass|assist|midfield|build/,                  q: 'soccer match stadium pitch daytime', beat: 'action' },
+      { re: /celebrat|cheer|roar|jubilant/,                q: 'soccer players celebrating stadium', beat: 'atmosphere' },
+      { re: /crowd|fans|stadium|stands|supporter/,         q: 'football stadium crowd cheering',  beat: 'atmosphere' },
+      { re: /night|lights|floodlight/,                     q: 'football stadium full crowd',      beat: 'atmosphere' },
+      { re: /trophy|win|champion|victory/,                 q: 'soccer stadium celebration crowd', beat: 'atmosphere' },
     ];
-    for (const t of TERMS) if (t.re.test(raw)) return t.q;
-    // Generic rotation so multi-scene shorts get variety with no match.
+    for (const t of TERMS) if (t.re.test(raw)) return { query: t.q, beat: t.beat };
+    // Generic rotation (treated as atmosphere — generic clips are acceptable
+    // when we have no specific action cue to honor).
     const fallback = [
-      'soccer match action pitch',
+      'soccer match stadium pitch daytime',
       'football stadium crowd cheering',
-      'soccer players celebrating goal',
-      'football pitch green grass',
+      'soccer players celebrating stadium',
+      'football pitch green grass stadium',
     ];
-    return fallback[index % fallback.length];
+    return { query: fallback[index % fallback.length], beat: 'atmosphere' };
   }
 
   /**
@@ -921,12 +960,12 @@ class AIVideoGenerator {
     const mode = options.clipMode || (shortsConfig.stockClips && shortsConfig.stockClips.mode) || 'mix';
     const visuals = [];
 
+    const getClipOpts = { portrait, width: options.width || 1080, height: options.height || 1920, minSec, logger: this.logger };
+
     if (mode === 'background') {
       // One clip for the whole short; fall back to per-scene stills if none.
-      const query = this._sceneClipQuery(script, 0);
-      const clip = await pexels.getClip(query, {
-        portrait, width: options.width || 1080, height: options.height || 1920, minSec, logger: this.logger,
-      });
+      const { query } = this._sceneClipQuery(script, 0);
+      const clip = await pexels.getClip(query, getClipOpts);
       for (let i = 0; i < validAssets.length; i++) {
         visuals.push(clip ? { type: 'clip', source: clip, query } : { type: 'still', source: validAssets[i] });
       }
@@ -934,17 +973,26 @@ class AIVideoGenerator {
       return { visuals, mode };
     }
 
-    // mix: try a clip per scene, fall back to that scene's still.
+    // mix: per scene, decide by beat type.
+    //   atmosphere + clip  -> full-screen clip (generic is fine here)
+    //   action     + clip  -> framed-card: still leads, clip is a motion bed
+    //   no clip            -> still (Ken Burns), unchanged
     for (let i = 0; i < validAssets.length; i++) {
-      const query = this._sceneClipQuery(script, i);
+      const { query, beat } = this._sceneClipQuery(script, i);
       let clip = null;
-      try {
-        clip = await pexels.getClip(query, {
-          portrait, width: options.width || 1080, height: options.height || 1920, minSec, logger: this.logger,
-        });
-      } catch { clip = null; }
-      if (clip && this.costMeter) this.costMeter.recordStockClip(query);
-      visuals.push(clip ? { type: 'clip', source: clip, query } : { type: 'still', source: validAssets[i] });
+      try { clip = await pexels.getClip(query, getClipOpts); } catch { clip = null; }
+
+      if (!clip) {
+        visuals.push({ type: 'still', source: validAssets[i] });
+        continue;
+      }
+      if (this.costMeter) this.costMeter.recordStockClip(query);
+      if (beat === 'action') {
+        // Keep the accurate still front-and-centre, clip behind it.
+        visuals.push({ type: 'card', clip, still: validAssets[i], query, beat });
+      } else {
+        visuals.push({ type: 'clip', source: clip, query, beat });
+      }
     }
     return { visuals, mode };
   }
@@ -972,6 +1020,105 @@ class AIVideoGenerator {
         `-filter_complex "[0:v]${base}[bg];[bg][1:v]overlay=0:0:format=auto" ${enc} "${clipPath}"`;
     } else {
       cmd = `ffmpeg -y -stream_loop -1 -i "${srcClip}" -t ${clipDuration} -vf "${base}" ${enc} "${clipPath}"`;
+    }
+    execSync(cmd, { stdio: 'pipe', timeout });
+    return clipPath;
+  }
+
+  /**
+   * Build a rounded-corner "card" PNG from a still image: cover-crop the still
+   * to the card box, round the corners (sharp SVG mask), and add a soft drop
+   * shadow on a transparent canvas. Returns { path, w, h } (card incl. shadow
+   * margin) or null if sharp is unavailable. cardW = target card width in px.
+   */
+  async _makeStillCard(stillPath, tempDir, index, cardW, cardH) {
+    if (!sharp) return null;
+    try {
+      const radius = Math.round(Math.min(cardW, cardH) * 0.05); // 5% corner radius
+      const pad = Math.round(cardW * 0.04); // shadow margin around the card
+      // Cover-crop the still into the card box.
+      const cropped = await sharp(stillPath).resize(cardW, cardH, { fit: 'cover' }).png().toBuffer();
+      // Rounded-rect mask.
+      const mask = Buffer.from(
+        `<svg width="${cardW}" height="${cardH}"><rect x="0" y="0" width="${cardW}" height="${cardH}" rx="${radius}" ry="${radius}" fill="#fff"/></svg>`
+      );
+      const rounded = await sharp(cropped)
+        .composite([{ input: mask, blend: 'dest-in' }]).png().toBuffer();
+      // Soft shadow: a blurred dark rounded-rect behind the card, on a padded
+      // transparent canvas so the blur isn't clipped.
+      const canvasW = cardW + pad * 2, canvasH = cardH + pad * 2;
+      const shadowRect = Buffer.from(
+        `<svg width="${canvasW}" height="${canvasH}"><rect x="${pad}" y="${pad + Math.round(pad*0.4)}" width="${cardW}" height="${cardH}" rx="${radius}" ry="${radius}" fill="#000"/></svg>`
+      );
+      const shadow = await sharp(shadowRect).blur(Math.max(4, Math.round(pad * 0.6))).png().toBuffer();
+      const out = path.join(tempDir, `card_${index}.png`);
+      await sharp({ create: { width: canvasW, height: canvasH, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } } })
+        .composite([
+          { input: shadow, top: 0, left: 0 },
+          { input: rounded, top: pad, left: pad },
+        ]).png().toFile(out);
+      return { path: out, w: canvasW, h: canvasH };
+    } catch (e) {
+      this.logger.warn(`_makeStillCard failed (${e.message})`);
+      return null;
+    }
+  }
+
+  /**
+   * Render an "action" SCENE as a framed-card composite: the accurate Flux still
+   * sits as a centered rounded card over a BLURRED + DIMMED motion bed (the
+   * stock clip), with the SAME text/scoreboard overlay on top. Keeps the still's
+   * narrative accuracy while adding ambient motion. Card width is tunable via
+   * STOCK_CARD_WIDTH_PCT (default 0.65 = 65% of frame width). On any failure the
+   * caller falls back to the plain still path.
+   */
+  async _renderCardScene(srcClip, stillPath, clipPath, clipDuration, textOverlay, dims, index, tempDir) {
+    const { execSync } = require('child_process');
+    const W = dims.width || 1920, H = dims.height || 1080, fps = 30;
+    const totalFrames = Math.round(clipDuration * fps);
+    const pct = Math.min(0.95, Math.max(0.4, parseFloat(process.env.STOCK_CARD_WIDTH_PCT || '0.82')));
+    const cardW = Math.round(W * pct / 2) * 2; // even dims for yuv420p
+    // Card height from the still's own aspect ratio (so it isn't distorted).
+    let aspect = H / W;
+    try { const m = await sharp(stillPath).metadata(); if (m.width && m.height) aspect = m.height / m.width; } catch {}
+    const cardH = Math.round(cardW * aspect / 2) * 2;
+
+    const card = await this._makeStillCard(stillPath, tempDir, index, cardW, cardH);
+    if (!card) throw new Error('card build failed');
+
+    // Background: lightly blurred + slightly dimmed clip, cover-cropped to frame,
+    // faded, looped. Blur is kept modest so the football STILL READS as football
+    // behind the card. Tunables: STOCK_BG_BLUR (default 10), STOCK_BG_DIM (0.12).
+    const blur = parseInt(process.env.STOCK_BG_BLUR || '10');
+    const dim = parseFloat(process.env.STOCK_BG_DIM || '0.12');
+    const bg = `scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},` +
+      `boxblur=${blur}:1,eq=brightness=-${dim},fps=${fps},` +
+      `fade=in:0:${Math.min(15, totalFrames)},fade=out:${Math.max(0, totalFrames - 15)}:15`;
+    const cx = Math.round((W - card.w) / 2), cy = Math.round((H - card.h) / 2);
+    const enc = `-c:v libx264 -preset veryfast -threads 0 -pix_fmt yuv420p -r ${fps}`;
+    const timeout = Math.max(120000, Math.ceil(clipDuration) * 8000);
+
+    // Inputs: [0]=clip (looped), [1]=card PNG, [2]=text overlay (optional).
+    // [0]->bg; bg+card -> composited; +text on top.
+    //
+    // The text overlay is a FULL-FRAME PNG with a dark title band spanning the
+    // whole width. On the card composite that band would bleed onto the clip on
+    // either side of the card. So we CROP the text overlay to the card's
+    // horizontal span (cx..cx+card.w) and overlay it at cx — keeping the band
+    // (and text) confined to the card, never on the clip background. The card's
+    // inner image starts `pad` in from card.w, so we inset by that pad too.
+    let cmd;
+    if (textOverlay) {
+      const cardPad = Math.round((card.w - cardW) / 2); // shadow margin per side
+      const innerX = cx + cardPad;                      // left edge of the still itself
+      const innerW = cardW;                             // still width (band span)
+      cmd = `ffmpeg -y -stream_loop -1 -i "${srcClip}" -i "${card.path}" -i "${textOverlay}" -t ${clipDuration} ` +
+        `-filter_complex "[0:v]${bg}[bg];[bg][1:v]overlay=${cx}:${cy}[c];` +
+        `[2:v]crop=${innerW}:ih:${innerX}:0[txt];[c][txt]overlay=${innerX}:0:format=auto" ` +
+        `${enc} "${clipPath}"`;
+    } else {
+      cmd = `ffmpeg -y -stream_loop -1 -i "${srcClip}" -i "${card.path}" -t ${clipDuration} ` +
+        `-filter_complex "[0:v]${bg}[bg];[bg][1:v]overlay=${cx}:${cy}" ${enc} "${clipPath}"`;
     }
     execSync(cmd, { stdio: 'pipe', timeout });
     return clipPath;
