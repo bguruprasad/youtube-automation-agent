@@ -621,6 +621,9 @@ class AIVideoGenerator {
     const { execSync } = require('child_process');
     const fsSync = require('fs');
 
+    // Reset per-run clip metadata (the generator instance is shared/reused).
+    this._lastClipMeta = null;
+
     // Filter to actual image files
     const validAssets = visualAssets.filter(a => {
       try { return fsSync.existsSync(a) && fsSync.statSync(a).size > 1000; } catch { return false; }
@@ -650,10 +653,28 @@ class AIVideoGenerator {
     } else {
       // Calculate per-section durations from script
       const sectionDurations = this._getSectionDurations(script, duration, validAssets.length);
-      
+
       // Pick a random video style for variety
       const videoStyle = this._pickVideoStyle();
       this.logger.info(`Video style: ${videoStyle.name}`);
+
+      // OPTIONAL stock-clip layer (Shorts): when options.useClips is set, resolve
+      // a real B-roll clip per scene (Pexels), falling back to the Flux still.
+      // sceneVisuals[i] = { type:'clip'|'still', source, query? }. When clips are
+      // off, every scene is its still (unchanged behavior).
+      let sceneVisuals = validAssets.map((a) => ({ type: 'still', source: a }));
+      if (options.useClips) {
+        try {
+          const resolved = await this._resolveSceneVisuals(script, validAssets, options);
+          sceneVisuals = resolved.visuals;
+          const clipN = sceneVisuals.filter((s) => s.type === 'clip').length;
+          this.logger.info(`Stock clips (${resolved.mode}): ${clipN}/${sceneVisuals.length} scene(s) use a clip`);
+        } catch (e) {
+          this.logger.warn(`Stock-clip resolution failed (${e.message}); using stills`);
+        }
+      }
+      // Surface per-scene source for the dashboard (i) info panel.
+      this._lastClipMeta = sceneVisuals.map((s) => ({ type: s.type, query: s.query || null }));
 
       // Generate individual clips with effects per section
       const clipPaths = [];
@@ -661,7 +682,8 @@ class AIVideoGenerator {
         const clipPath = path.join(tempDir, `clip_${i}.mp4`);
         const clipDuration = sectionDurations[i] || Math.floor(duration / validAssets.length);
         const sectionTitle = this._getSectionTitle(script, i);
-        
+        const scene = sceneVisuals[i] || { type: 'still', source: validAssets[i] };
+
         // Build the Ken Burns / fade filter that operates on the raw image.
         const filter = this._buildClipFilter(i, validAssets.length, clipDuration, sectionTitle, videoStyle, { width: W, height: H });
 
@@ -672,6 +694,19 @@ class AIVideoGenerator {
         const textOverlay = options.match
           ? await this._makeScoreboardOverlay(options.match, tempDir, i, { width: W, height: H })
           : await this._makeTextOverlay(sectionTitle, tempDir, i, { width: W, height: H });
+
+        // CLIP scene: render the real B-roll (cover-crop, no zoompan) with the
+        // same overlay. On any failure, fall through to the still path below.
+        if (scene.type === 'clip') {
+          try {
+            await this._renderClipScene(scene.source, clipPath, clipDuration, textOverlay, { width: W, height: H });
+            clipPaths.push(clipPath);
+            continue;
+          } catch (e) {
+            this.logger.warn(`Clip scene ${i} render failed (${e.message}); falling back to still`);
+            if (this._lastClipMeta[i]) this._lastClipMeta[i] = { type: 'still', query: null };
+          }
+        }
 
         // zoompan encoding is CPU-heavy; use a fast preset + all cores, and a
         // timeout that scales with clip length (so long sections don't get
@@ -827,6 +862,119 @@ class AIVideoGenerator {
 
     filters.push(`fps=${fps}`);
     return filters.join(',');
+  }
+
+  // ---- Stock-clip (Pexels) support ------------------------------------------
+  // Generic football B-roll layered into Shorts. See utils/pexels-provider.js.
+  // All of this is OFF unless the caller passes options.useClips (the
+  // /generate-short flow resolves that from a DB toggle / per-run override).
+
+  /**
+   * Derive a Pexels search query for a scene from the script's OWN visual
+   * direction + keywords, sanitized to GENERIC football terms (no team/player
+   * names — Pexels has no real-player footage and we want copyright-safe,
+   * non-specific B-roll). Deterministic, no LLM cost. Returns a short query
+   * string. `index` rotates a fallback so scenes don't all reuse one clip.
+   */
+  _sceneClipQuery(script, index) {
+    const sections = (script.mainContent && script.mainContent.sections) || [];
+    const sec = sections[index] || {};
+    const raw = [
+      Array.isArray(sec.visuals) ? sec.visuals.join(' ') : sec.visuals,
+      sec.title,
+      Array.isArray(script.keywords) ? script.keywords.join(' ') : '',
+    ].filter(Boolean).join(' ').toLowerCase();
+
+    // Strip anything that could be a specific entity (proper-noun-ish words are
+    // dropped); map to a small set of safe, evergreen football B-roll terms.
+    const TERMS = [
+      { re: /celebrat|goal|score|cheer/, q: 'soccer players celebrating goal' },
+      { re: /crowd|fans|stadium|stands|supporter/, q: 'football stadium crowd cheering' },
+      { re: /save|keeper|goalkeeper|dive/, q: 'soccer goalkeeper save' },
+      { re: /dribbl|skill|run|sprint|pace|attack/, q: 'soccer player dribbling pitch' },
+      { re: /pass|midfield|build/, q: 'soccer match action pitch' },
+      { re: /night|lights|floodlight/, q: 'football stadium night lights' },
+      { re: /trophy|win|champion|victory/, q: 'soccer trophy celebration' },
+    ];
+    for (const t of TERMS) if (t.re.test(raw)) return t.q;
+    // Generic rotation so multi-scene shorts get variety with no match.
+    const fallback = [
+      'soccer match action pitch',
+      'football stadium crowd cheering',
+      'soccer players celebrating goal',
+      'football pitch green grass',
+    ];
+    return fallback[index % fallback.length];
+  }
+
+  /**
+   * For each scene, decide whether to use a stock clip or the Flux still.
+   * Returns an array of { type:'clip'|'still', source, query? } aligned to
+   * validAssets. In 'background' mode only ONE clip is resolved (used full-frame
+   * behind every overlay). FAILS OPEN: any clip miss => that scene stays a still.
+   */
+  async _resolveSceneVisuals(script, validAssets, options) {
+    const portrait = (options.height || 1080) > (options.width || 1920);
+    const pexels = require('./pexels-provider');
+    const shortsConfig = require('./shorts-config');
+    const minSec = (shortsConfig.stockClips && shortsConfig.stockClips.minClipSec) || 4;
+    const mode = options.clipMode || (shortsConfig.stockClips && shortsConfig.stockClips.mode) || 'mix';
+    const visuals = [];
+
+    if (mode === 'background') {
+      // One clip for the whole short; fall back to per-scene stills if none.
+      const query = this._sceneClipQuery(script, 0);
+      const clip = await pexels.getClip(query, {
+        portrait, width: options.width || 1080, height: options.height || 1920, minSec, logger: this.logger,
+      });
+      for (let i = 0; i < validAssets.length; i++) {
+        visuals.push(clip ? { type: 'clip', source: clip, query } : { type: 'still', source: validAssets[i] });
+      }
+      if (clip && this.costMeter) this.costMeter.recordStockClip(query, { label: 'Stock clip (bg)' });
+      return { visuals, mode };
+    }
+
+    // mix: try a clip per scene, fall back to that scene's still.
+    for (let i = 0; i < validAssets.length; i++) {
+      const query = this._sceneClipQuery(script, i);
+      let clip = null;
+      try {
+        clip = await pexels.getClip(query, {
+          portrait, width: options.width || 1080, height: options.height || 1920, minSec, logger: this.logger,
+        });
+      } catch { clip = null; }
+      if (clip && this.costMeter) this.costMeter.recordStockClip(query);
+      visuals.push(clip ? { type: 'clip', source: clip, query } : { type: 'still', source: validAssets[i] });
+    }
+    return { visuals, mode };
+  }
+
+  /**
+   * Render one SCENE that is a video clip (not a still): cover-scale/crop the
+   * source mp4 to the target frame, trim/loop to clipDuration, add the same
+   * fade as stills, and composite the SAME text/scoreboard overlay on top. No
+   * zoompan (the clip already moves). Mirrors the still path's ffmpeg shape so
+   * the resulting clip shares codec/fps/resolution and concats by stream-copy.
+   */
+  async _renderClipScene(srcClip, clipPath, clipDuration, textOverlay, dims) {
+    const { execSync } = require('child_process');
+    const W = dims.width || 1920, H = dims.height || 1080, fps = 30;
+    const totalFrames = Math.round(clipDuration * fps);
+    // Cover-crop to exact frame (no black bars), set fps, fade in/out, trim.
+    const base = `scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},` +
+      `fps=${fps},fade=in:0:${Math.min(15, totalFrames)},fade=out:${Math.max(0, totalFrames - 15)}:15`;
+    const enc = `-c:v libx264 -preset veryfast -threads 0 -pix_fmt yuv420p -r ${fps}`;
+    // -stream_loop -1 loops a short source to fill clipDuration; -t trims it.
+    const timeout = Math.max(120000, Math.ceil(clipDuration) * 8000);
+    let cmd;
+    if (textOverlay) {
+      cmd = `ffmpeg -y -stream_loop -1 -i "${srcClip}" -i "${textOverlay}" -t ${clipDuration} ` +
+        `-filter_complex "[0:v]${base}[bg];[bg][1:v]overlay=0:0:format=auto" ${enc} "${clipPath}"`;
+    } else {
+      cmd = `ffmpeg -y -stream_loop -1 -i "${srcClip}" -t ${clipDuration} -vf "${base}" ${enc} "${clipPath}"`;
+    }
+    execSync(cmd, { stdio: 'pipe', timeout });
+    return clipPath;
   }
 
   /**

@@ -56,6 +56,12 @@ class CostMeter {
     this._add('tts', label, `${chars} chars (ElevenLabs credits)`, 0, 'elevenlabs');
   }
 
+  // Pexels stock clip. Free tier (license-free, no per-call charge), so $0 with
+  // a provider note — keeps the per-vendor dashboard honest about what was used.
+  recordStockClip(query, { count = 1, label = 'Stock clip' } = {}) {
+    this._add('clip', label, `${count}x "${query}" (Pexels free)`, 0, 'pexels');
+  }
+
   // Chat/LLM call. usage = OpenAI usage object { prompt_tokens, completion_tokens }.
   recordLLM(model, usage, { label = 'LLM' } = {}) {
     const [inRate, outRate] = LLM_RATES[model] || LLM_RATES['gpt-4o-mini'];

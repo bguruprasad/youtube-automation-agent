@@ -95,7 +95,7 @@ class ShortsProducer {
    * Produce a Short. `images` = absolute paths to source images (1+).
    * Returns { folder, folderPath, videoPath }.
    */
-  async produce(script, images, { sourceThumb = null, match = null, seo = null } = {}) {
+  async produce(script, images, { sourceThumb = null, match = null, seo = null, useClips = false, clipMode = 'mix' } = {}) {
     const W = shortsConfig.resolution.width;
     const H = shortsConfig.resolution.height;
     const { folderTimestamp } = require('./timestamp');
@@ -126,9 +126,12 @@ class ShortsProducer {
     }
 
     // 3. Assemble vertical video. `match` (optional) enables the scoreboard
-    // overlay for World Cup recap Shorts.
+    // overlay for World Cup recap Shorts. `useClips` layers Pexels B-roll.
     const videoPath = path.join(folderPath, 'video.mp4');
-    await this.gen.generateVideo(script, verticalImages, audioPath, videoPath, { width: W, height: H, match });
+    await this.gen.generateVideo(script, verticalImages, audioPath, videoPath,
+      { width: W, height: H, match, useClips, clipMode });
+    // Per-scene clip-vs-still source (set by the assembler) for the (i) panel.
+    const clipMeta = (useClips && Array.isArray(this.gen._lastClipMeta)) ? this.gen._lastClipMeta : null;
 
     // 4. Captions (simple, from narration text & duration).
     try {
@@ -162,6 +165,16 @@ class ShortsProducer {
       models: { image: 'gpt-image-1', tts: this.gen.elevenLabsApiKey ? 'elevenlabs' : 'tts-1-hd' },
       generatedAt: new Date().toISOString(),
     };
+    // Stock-clips info for the dashboard (i) panel: counts + per-scene source.
+    if (useClips && clipMeta) {
+      const clipCount = clipMeta.filter(s => s.type === 'clip').length;
+      scriptOut.meta.stockClips = {
+        mode: clipMode,
+        clipCount,
+        stillCount: clipMeta.length - clipCount,
+        scenes: clipMeta, // [{ type, query }]
+      };
+    }
     await fs.writeFile(path.join(folderPath, 'script.json'), JSON.stringify(scriptOut, null, 2));
 
     this.logger.info(`Short produced: ${folderPath}`);

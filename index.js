@@ -395,6 +395,41 @@ class YouTubeAutomationAgent {
       }
     });
 
+    // Stock-clips (Pexels B-roll in Shorts) GLOBAL default toggle. This sets the
+    // default for all Shorts incl. automation; the manual /generate-short can
+    // still override per-run via { useClips }. Mode is mix|background.
+    this.app.get('/automation/stock-clips', async (req, res) => {
+      try {
+        const shortsConfig = require('./utils/shorts-config');
+        const setting = await this.db.getSetting('stock_clips_enabled');
+        const enabled = setting == null
+          ? shortsConfig.stockClips.enabledDefault   // fall back to env default
+          : setting === 'true';
+        const mode = (await this.db.getSetting('stock_clips_mode')) || shortsConfig.stockClips.mode;
+        res.json({ success: true, enabled, mode, hasKey: !!shortsConfig.stockClips.apiKey });
+      } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+      }
+    });
+    this.app.post('/automation/stock-clips', async (req, res) => {
+      try {
+        if (req.body && req.body.enabled != null) {
+          await this.db.setSetting('stock_clips_enabled', String(!!req.body.enabled),
+            'Use Pexels stock B-roll clips in Shorts (global default)');
+        }
+        if (req.body && req.body.mode) {
+          const mode = String(req.body.mode).toLowerCase();
+          if (!['mix', 'background'].includes(mode)) throw new Error("mode must be 'mix' or 'background'");
+          await this.db.setSetting('stock_clips_mode', mode, 'Stock-clip layout mode');
+        }
+        const enabled = (await this.db.getSetting('stock_clips_enabled')) === 'true';
+        const mode = (await this.db.getSetting('stock_clips_mode')) || require('./utils/shorts-config').stockClips.mode;
+        res.json({ success: true, enabled, mode });
+      } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+      }
+    });
+
     // Enable/disable a single task. Body: { enabled: true|false }.
     this.app.post('/automation/task/:task/toggle', async (req, res) => {
       try {
@@ -572,10 +607,12 @@ class YouTubeAutomationAgent {
           images.push(...assets);
         }
 
-        const result = await this.shortsProducer.produce(script, images);
+        // Stock clips: per-run override (req.body.useClips) > DB toggle > env.
+        const clipOpts = await this._resolveClipOptions(req.body && req.body.useClips);
+        const result = await this.shortsProducer.produce(script, images, clipOpts);
         await this._ledgerFolderCost(result.folder, 'short', shortsConfig.outputDir);
         await this.db.upsertContent({ folder: result.folder, type: 'short', title: script.title });
-        res.json({ success: true, folder: result.folder, title: script.title, moment: moment.title });
+        res.json({ success: true, folder: result.folder, title: script.title, moment: moment.title, useClips: clipOpts.useClips });
       } catch (error) {
         this.logger.error('Short generation failed:', error);
         res.status(500).json({ success: false, error: error.message });
@@ -634,8 +671,10 @@ class YouTubeAutomationAgent {
         this.agents.production.aiVideoGenerator.costMeter = new CostMeter();
 
         const srcThumb = path.join(srcPath, 'thumbnail.png');
+        const clipOpts = await this._resolveClipOptions(req.body && req.body.useClips);
         const result = await this.shortsProducer.produce(shortScript, images, {
           sourceThumb: require('fs').existsSync(srcThumb) ? srcThumb : null,
+          ...clipOpts,
         });
         await this._ledgerFolderCost(result.folder, 'short', require('./utils/shorts-config').outputDir);
         await this.db.upsertContent({ folder: result.folder, type: 'short', title: shortScript.title });
@@ -645,6 +684,24 @@ class YouTubeAutomationAgent {
         res.status(500).json({ success: false, error: error.message });
       }
     });
+  }
+
+  // Resolve whether a Short should use stock clips, and in which mode. Precedence:
+  //   per-run override (req.body.useClips) > DB setting > env default.
+  // Returns { useClips, clipMode }. A missing PEXELS key forces useClips off
+  // (the provider would fail open anyway, but this keeps logs/meta honest).
+  async _resolveClipOptions(override) {
+    const shortsConfig = require('./utils/shorts-config');
+    if (!shortsConfig.stockClips.apiKey) return { useClips: false, clipMode: shortsConfig.stockClips.mode };
+    let useClips;
+    if (override != null) {
+      useClips = !!override;
+    } else {
+      const setting = await this.db.getSetting('stock_clips_enabled');
+      useClips = setting == null ? shortsConfig.stockClips.enabledDefault : setting === 'true';
+    }
+    const clipMode = (await this.db.getSetting('stock_clips_mode')) || shortsConfig.stockClips.mode;
+    return { useClips, clipMode };
   }
 
   // Record a generated folder's cost into the cost ledger (idempotent by folder

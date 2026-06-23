@@ -1292,6 +1292,22 @@
           `</tbody></table>`;
       }
 
+      // Stock-clips section (Shorts only, when clips were used). Shows the
+      // clip-vs-still split and the Pexels query per scene so you can correlate
+      // quality with the source footage.
+      const sc = meta && meta.stockClips;
+      if (sc) {
+        const sceneRows = (sc.scenes || []).map((s, i) =>
+          `<tr><td>Scene ${i + 1}</td>` +
+          `<td>${s.type === 'clip' ? '🎬 clip' : '🖼 still'}</td>` +
+          `<td style="color:var(--text-dim)">${escHtml(s.query || '—')}</td></tr>`
+        ).join('');
+        html += `<h4 style="margin:16px 0 8px;">Stock clips (${escHtml(sc.mode)})</h4>` +
+          `<p class="info-note" style="margin-bottom:8px;">${sc.clipCount} clip · ${sc.stillCount} still</p>` +
+          `<table class="info-table"><thead><tr><th>Scene</th><th>Source</th><th>Pexels query</th></tr></thead>` +
+          `<tbody>${sceneRows || '<tr><td colspan="3" style="color:var(--text-dim)">—</td></tr>'}</tbody></table>`;
+      }
+
       document.getElementById('info-modal-body').innerHTML = html;
       document.getElementById('info-modal').style.display = 'flex';
     }
@@ -1329,6 +1345,10 @@
         let shortsCount = 1;
         try { const sc = await (await fetch('/automation/shorts-count')).json(); if (sc.success) shortsCount = sc.count; } catch {}
 
+        let clips = { enabled: false, mode: 'mix', hasKey: false };
+        try { const c = await (await fetch('/automation/stock-clips')).json(); if (c.success) clips = c; } catch {}
+        const inputStyle = 'padding:6px;border-radius:4px;background:var(--surface-2);color:var(--text);border:1px solid var(--border);';
+
         master.innerHTML = `
           <div class="auto-toggle-row">
             <span class="auto-state ${st.enabled ? 'on' : 'off'}">${st.enabled ? '🟢 Automation ON' : '⚪ Automation OFF'}</span>
@@ -1340,9 +1360,20 @@
           <div class="auto-toggle-row" style="margin-top:12px;">
             <label style="font-size:0.85rem;">Daily Shorts to generate:</label>
             <input type="number" id="shorts-count-input" min="0" max="10" value="${shortsCount}"
-              style="width:64px;padding:6px;border-radius:4px;background:var(--surface-2);color:var(--text);border:1px solid var(--border);" />
+              style="width:64px;${inputStyle}" />
             <button class="btn btn-sm btn-outline" onclick="saveShortsCount()">Save</button>
             <span id="shorts-count-status" style="font-size:0.8rem;"></span>
+          </div>
+          <div class="auto-toggle-row" style="margin-top:12px;">
+            <span class="auto-state ${clips.enabled ? 'on' : 'off'}" style="font-size:0.85rem;">${clips.enabled ? '🎬 Stock clips ON' : '🖼 Stock clips OFF'}</span>
+            <button class="btn btn-sm ${clips.enabled ? 'btn-upload' : 'btn-green'}" ${clips.hasKey ? '' : 'disabled'}
+              onclick="toggleStockClips(${!clips.enabled})">${clips.enabled ? 'Disable' : 'Enable'}</button>
+            <label style="font-size:0.85rem;">Mode:</label>
+            <select id="stock-clips-mode" ${clips.hasKey ? '' : 'disabled'} onchange="saveStockClipsMode(this.value)" style="${inputStyle}">
+              <option value="mix" ${clips.mode === 'mix' ? 'selected' : ''}>mix (clips + stills)</option>
+              <option value="background" ${clips.mode === 'background' ? 'selected' : ''}>background (clip behind overlays)</option>
+            </select>
+            <span id="stock-clips-status" style="font-size:0.8rem;color:var(--text-dim);">${clips.hasKey ? 'Shorts B-roll (Pexels)' : 'set PEXELS_API_KEY to enable'}</span>
           </div>`;
 
         tasksEl.innerHTML = '<div class="outputs-list">' + (st.scheduledTasks || []).map(t => {
@@ -1404,6 +1435,33 @@
         if (!data.success) throw new Error(data.error || 'Failed');
         input.value = data.count;
         if (statusEl) { statusEl.style.color = 'var(--green,#3fb950)'; statusEl.textContent = '✅ saved'; }
+      } catch (err) {
+        if (statusEl) { statusEl.style.color = 'var(--red,#f85149)'; statusEl.textContent = '❌ ' + err.message; }
+      }
+    }
+
+    async function toggleStockClips(enable) {
+      try {
+        const res = await fetch('/automation/stock-clips', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled: enable })
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || 'Failed');
+        loadAutomation();
+      } catch (err) { alert('Stock clips toggle failed: ' + err.message); }
+    }
+
+    async function saveStockClipsMode(mode) {
+      const statusEl = document.getElementById('stock-clips-status');
+      try {
+        const res = await fetch('/automation/stock-clips', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mode })
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || 'Failed');
+        if (statusEl) { statusEl.style.color = 'var(--green,#3fb950)'; statusEl.textContent = '✅ mode: ' + data.mode; }
       } catch (err) {
         if (statusEl) { statusEl.style.color = 'var(--red,#f85149)'; statusEl.textContent = '❌ ' + err.message; }
       }

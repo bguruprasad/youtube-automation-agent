@@ -311,6 +311,11 @@ class DailyAutomation {
       const { ShortsProducer } = require('../utils/shorts-producer');
       const producer = new ShortsProducer(this.agents.production.aiVideoGenerator, this.logger);
 
+      // Stock clips: automation uses the GLOBAL default (no per-run override).
+      const clipOpts = (this.app && this.app._resolveClipOptions)
+        ? await this.app._resolveClipOptions(null) : { useClips: false, clipMode: 'mix' };
+      if (clipOpts.useClips) this.logger.info(`Daily Shorts will layer stock clips (mode=${clipOpts.clipMode})`);
+
       // Dedup: don't repeat a moment used recently (within this run OR the last
       // ~14 days). Persisted as a capped list of normalized titles.
       const norm = (t) => String(t || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
@@ -350,7 +355,7 @@ class DailyAutomation {
             images.push(...assets);
           }
 
-          const result = await producer.produce(script, images);
+          const result = await producer.produce(script, images, clipOpts);
           // Ledger the cost + index the content (helpers available via this.app).
           if (this.app && this.app._ledgerFolderCost) {
             await this.app._ledgerFolderCost(result.folder, 'short', shortsConfig.outputDir);

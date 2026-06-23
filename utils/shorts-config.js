@@ -25,4 +25,22 @@ module.exports = {
   outputDir: require('./paths').shortsRoot(),
   // Optional: football-data.org key enables RECENT real-match moments.
   footballDataApiKey: process.env.FOOTBALL_DATA_API_KEY || null,
+
+  // --- Stock video clips (Pexels) ---------------------------------------
+  // EXPERIMENTAL: layer real generic football B-roll (no real players, so
+  // copyright-safe) into Shorts instead of / alongside Flux stills. OFF by
+  // default. The runtime default is also gated behind a DB setting
+  // (`stock_clips_enabled`) and a per-run `useClips` override; this env var is
+  // only the fallback default when neither is provided.
+  stockClips: {
+    // Default-on switch (env fallback only; DB setting / per-run override win).
+    enabledDefault: String(process.env.STOCK_CLIPS || '').toLowerCase() === 'true',
+    // 'mix'        -> some scenes are clips, some stay Flux stills.
+    // 'background' -> one clip runs full-frame behind the overlays for the whole short.
+    mode: (process.env.STOCK_CLIPS_MODE || 'mix').toLowerCase(),
+    // Pexels API (free tier). No key => feature silently disabled (fails open).
+    apiKey: process.env.PEXELS_API_KEY || null,
+    // Minimum clip length (s) to accept from search (we trim/loop to scene length).
+    minClipSec: parseInt(process.env.STOCK_CLIP_MIN_SEC || '4', 10),
+  },
 };
