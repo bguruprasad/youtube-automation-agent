@@ -954,16 +954,25 @@ class AIVideoGenerator {
       { re: /night|lights|floodlight/,                     q: 'football stadium full crowd',      beat: 'atmosphere' },
       { re: /trophy|win|champion|victory/,                 q: 'soccer stadium celebration crowd', beat: 'atmosphere' },
     ];
-    for (const t of TERMS) if (t.re.test(raw)) return { query: t.q, beat: t.beat };
-    // Generic rotation (treated as atmosphere — generic clips are acceptable
-    // when we have no specific action cue to honor).
+    // pureCrowd: the scene is EXCLUSIVELY about crowd/stands/trophy with no
+    // specific subject (no player, goal, moment, match action). Only these get a
+    // full-screen ambient clip; everything else defaults to the card so the
+    // accurate still leads. "fan reactions + key moments" is NOT pureCrowd (it
+    // mentions a subject), so a recap still leads as intended.
+    const crowdOnly = /\b(crowd|fans?|stands|supporters?|spectators?|trophy|lift(ing)? the|celebration)\b/.test(raw);
+    const hasSubject = /\b(goal|moment|player|strike|shot|save|keeper|dribbl|skill|run|header|volley|finish|assist|pass|highlight|key|star|hero|match)\b/.test(raw);
+    const pureCrowd = crowdOnly && !hasSubject;
+
+    for (const t of TERMS) if (t.re.test(raw)) return { query: t.q, beat: t.beat, pureCrowd };
+    // Generic rotation. No specific cue -> default to a card (still leads); these
+    // are never pureCrowd.
     const fallback = [
       'soccer match stadium pitch daytime',
       'football stadium crowd cheering',
       'soccer players celebrating stadium',
       'football pitch green grass stadium',
     ];
-    return { query: fallback[index % fallback.length], beat: 'atmosphere' };
+    return { query: fallback[index % fallback.length], beat: 'atmosphere', pureCrowd: false };
   }
 
   /**
@@ -993,12 +1002,14 @@ class AIVideoGenerator {
       return { visuals, mode };
     }
 
-    // mix: per scene, decide by beat type.
-    //   atmosphere + clip  -> full-screen clip (generic is fine here)
-    //   action     + clip  -> framed-card: still leads, clip is a motion bed
-    //   no clip            -> still (Ken Burns), unchanged
+    // mix: per scene, the CARD is the default (the accurate Flux still leads,
+    // with the clip as a blurred motion bed) — the still is the on-narrative
+    // asset, so it should be front-and-centre on (almost) every scene. A
+    // full-screen clip is used ONLY for genuinely pure-crowd/celebration scenes
+    // (`pureCrowd`), where there's no specific subject to show and ambient
+    // footage reads fine. No clip found -> plain still (Ken Burns), unchanged.
     for (let i = 0; i < validAssets.length; i++) {
-      const { query, beat } = this._sceneClipQuery(script, i);
+      const { query, beat, pureCrowd } = this._sceneClipQuery(script, i);
       let clip = null;
       try { clip = await pexels.getClip(query, getClipOpts); } catch { clip = null; }
 
@@ -1007,11 +1018,12 @@ class AIVideoGenerator {
         continue;
       }
       if (this.costMeter) this.costMeter.recordStockClip(query);
-      if (beat === 'action') {
-        // Keep the accurate still front-and-centre, clip behind it.
-        visuals.push({ type: 'card', clip, still: validAssets[i], query, beat });
-      } else {
+      if (pureCrowd) {
+        // Pure crowd/celebration: ambient full-screen clip is fine here.
         visuals.push({ type: 'clip', source: clip, query, beat });
+      } else {
+        // Default: accurate still front-and-centre, clip behind it.
+        visuals.push({ type: 'card', clip, still: validAssets[i], query, beat });
       }
     }
     return { visuals, mode };
