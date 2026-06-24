@@ -339,29 +339,35 @@ class DailyAutomation {
           recent.push(moment.title);
           await persistRecent(); // persist before generating so a crash can't unmark it
 
-          this.logger.info(`Daily Short ${n + 1}/${count}: ${moment.title}`);
-          const script = await this.agents.scriptWriter.generateShortScript(moment);
-
-          // Fresh meter per Short so each script.json gets its own cost.
-          this.agents.production.aiVideoGenerator.costMeter = new CostMeter();
-
-          const images = [];
-          const visualPrompt = `${moment.title}. ${moment.hint || ''} Football/soccer, dramatic, cinematic.`;
-          for (let i = 0; i < shortsConfig.imageCount; i++) {
-            const assets = await this.agents.production.aiVideoGenerator.generateVisualAssets(
-              visualPrompt, 'cinematic', 1,
-              { size: shortsConfig.imageSize, quality: shortsConfig.imageQuality }
-            );
-            images.push(...assets);
+          // ENQUEUE the Short so it generates one-at-a-time via the queue rather
+          // than N back-to-back inline (which thrashed the machine). The 'short'
+          // runner reuses the global stock-clip default. moment.title forces the
+          // subject so the queued job matches what we picked here.
+          if (this.app && this.app.genQueue) {
+            this.logger.info(`Daily Short ${n + 1}/${count}: queuing ${moment.title}`);
+            await this.app.genQueue.enqueue({
+              kind: 'short',
+              label: moment.title,
+              payload: { moment: moment.title },
+            });
+            made.push({ title: moment.title, queued: true });
+          } else {
+            // Fallback (queue unavailable): old inline path.
+            this.logger.info(`Daily Short ${n + 1}/${count}: ${moment.title}`);
+            const script = await this.agents.scriptWriter.generateShortScript(moment);
+            this.agents.production.aiVideoGenerator.costMeter = new CostMeter();
+            const images = [];
+            const visualPrompt = `${moment.title}. ${moment.hint || ''} Football/soccer, dramatic, cinematic.`;
+            for (let i = 0; i < shortsConfig.imageCount; i++) {
+              const assets = await this.agents.production.aiVideoGenerator.generateVisualAssets(
+                visualPrompt, 'cinematic', 1, { size: shortsConfig.imageSize, quality: shortsConfig.imageQuality });
+              images.push(...assets);
+            }
+            const result = await producer.produce(script, images, clipOpts);
+            if (this.app && this.app._ledgerFolderCost) await this.app._ledgerFolderCost(result.folder, 'short', shortsConfig.outputDir);
+            await this.db.upsertContent({ folder: result.folder, type: 'short', title: script.title });
+            made.push({ folder: result.folder, title: script.title });
           }
-
-          const result = await producer.produce(script, images, clipOpts);
-          // Ledger the cost + index the content (helpers available via this.app).
-          if (this.app && this.app._ledgerFolderCost) {
-            await this.app._ledgerFolderCost(result.folder, 'short', shortsConfig.outputDir);
-          }
-          await this.db.upsertContent({ folder: result.folder, type: 'short', title: script.title });
-          made.push({ folder: result.folder, title: script.title });
         } catch (e) {
           this.logger.error(`Daily Short ${n + 1} failed: ${e.message}`);
         }
@@ -454,35 +460,41 @@ class DailyAutomation {
           }
           if (vc.checked) this.logger.info(`${tag}: score confirmed ${match.homeTeam} ${match.homeScore}-${match.awayScore} ${match.awayTeam} (second source agrees)`);
 
-          // Raw fixture from the primary feed, logged before generation so the
-          // exact score we acted on is always in the logs (not just derived from
-          // the LLM-written title). Matches the manual /generate-match log.
-          this.logger.info(`${tag}: generating for raw fixture — ${match.homeTeam} ${match.homeScore}-${match.awayScore} ${match.awayTeam} (matchId=${match.id})`);
+          // Raw fixture from the primary feed, logged before ENQUEUE so the
+          // exact score we acted on is always in the logs.
+          this.logger.info(`${tag}: queuing for raw fixture — ${match.homeTeam} ${match.homeScore}-${match.awayScore} ${match.awayTeam} (matchId=${match.id})`);
 
-          const result = await this.app.generateMatchVideos(match, { formats: [format] });
-
-          // Auto-upload (best-effort) at the configured privacy.
-          const { outputRoot, shortsRoot } = require('../utils/paths');
-          if (format === 'long' && result.long?.folder) {
+          // ENQUEUE instead of generating inline: the generation queue runs jobs
+          // one at a time with a delay, so an hourly batch of finished matches no
+          // longer launches many concurrent ffmpeg/Flux runs (which thrashed the
+          // machine and timed out renders). The job runner does generate+upload.
+          if (this.app.genQueue) {
+            await this.app.genQueue.enqueue({
+              kind: 'wc-match',
+              label: `${match.homeTeam} ${match.homeScore}-${match.awayScore} ${match.awayTeam} (${format})`,
+              payload: { match, format, privacy },
+              dedupKey: `wc-match:${match.id}:${format}`,
+            });
+          } else {
+            // Fallback (queue unavailable): old inline path.
+            const result = await this.app.generateMatchVideos(match, { formats: [format] });
+            const { outputRoot, shortsRoot } = require('../utils/paths');
             try {
-              const fp = require('path').join(outputRoot(), result.long.folder);
-              await this.agents.publishing.uploadOutputFolder(fp, { privacyStatus: privacy });
-            } catch (e) { this.logger.warn(`${tag} upload failed: ${e.message}`); }
-          }
-          if (format === 'short' && result.short?.folder) {
-            try {
-              const fp = require('path').join(shortsRoot(), result.short.folder);
-              await this.agents.publishing.uploadOutputFolder(fp, { privacyStatus: privacy });
+              if (format === 'long' && result.long?.folder) {
+                await this.agents.publishing.uploadOutputFolder(require('path').join(outputRoot(), result.long.folder), { privacyStatus: privacy });
+              } else if (format === 'short' && result.short?.folder) {
+                await this.agents.publishing.uploadOutputFolder(require('path').join(shortsRoot(), result.short.folder), { privacyStatus: privacy });
+              }
             } catch (e) { this.logger.warn(`${tag} upload failed: ${e.message}`); }
           }
 
           seenSet.add(match.id);
-          // Persist the seen-set IMMEDIATELY after each match (not just at the
-          // end) so a crash/restart mid-loop can never cause a match to be
-          // re-generated and re-uploaded.
+          // Persist the seen-set IMMEDIATELY after enqueuing each match so a
+          // crash/restart can't re-queue it (the queue itself is DB-persisted and
+          // resumes the actual generation).
           await this.db.setSetting(seenKey,
             JSON.stringify(Array.from(seenSet).slice(-200)), `Processed World Cup match IDs for ${format}s (seen-guard)`);
-          made.push({ id: match.id, fixture: `${match.homeTeam} ${match.homeScore}-${match.awayScore} ${match.awayTeam}`, ...result });
+          made.push({ id: match.id, fixture: `${match.homeTeam} ${match.homeScore}-${match.awayScore} ${match.awayTeam}`, queued: true });
         } catch (e) {
           this.logger.error(`${tag}: match ${match.id} failed: ${e.message}`);
         }

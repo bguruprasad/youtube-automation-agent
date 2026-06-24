@@ -53,11 +53,19 @@ class YouTubeAutomationAgent {
       // Setup API endpoints
       this.setupAPI();
       
+      // Generation queue: serialize heavy generation so concurrent ffmpeg/Flux
+      // runs don't thrash the machine (which caused render timeouts). DB-persisted
+      // and FIFO; runners are registered below.
+      const { GenerationQueue } = require('./utils/generation-queue');
+      this.genQueue = new GenerationQueue(this.db, this.logger);
+      this._registerQueueRunners();
+      await this.genQueue.start();
+
       // Initialize scheduler
       this.logger.info('Setting up automation scheduler...');
       this.scheduler = new DailyAutomation(this.agents, this.db, this);
       await this.scheduler.initialize();
-      
+
       this.isInitialized = true;
       this.logger.success('YouTube Automation Agent initialized successfully!');
       
@@ -361,6 +369,16 @@ class YouTubeAutomationAgent {
       }
     });
 
+    // Generation queue status: what's running now, what's waiting, recent results.
+    this.app.get('/queue', async (req, res) => {
+      try {
+        if (!this.genQueue) return res.json({ success: false, error: 'Queue not initialized' });
+        res.json({ success: true, queue: await this.genQueue.status() });
+      } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+      }
+    });
+
     // Body: { enabled: true|false }. Persists the master switch.
     this.app.post('/automation/toggle', async (req, res) => {
       try {
@@ -575,46 +593,17 @@ class YouTubeAutomationAgent {
     // recent via football-data.org when configured).
     this.app.post('/generate-short', async (req, res) => {
       try {
-        const shortsConfig = require('./utils/shorts-config');
-        const momentsProvider = require('./utils/football-moments-provider');
-        const forced = req.body && req.body.moment;
-        const moment = forced
-          ? { title: forced, hint: '', recent: false }
-          : await momentsProvider.getMoment({ logger: this.logger });
-
-        this.logger.info(`Generating Short for moment: ${moment.title}`);
-        const script = await this.agents.scriptWriter.generateShortScript(moment);
-
-        // Start a fresh cost meter for this run (scene images + TTS recorded
-        // against it; produce() embeds the summary into script.json).
-        const { CostMeter } = require('./utils/cost-meter');
-        this.agents.production.aiVideoGenerator.costMeter = new CostMeter();
-
-        // Fresh portrait, low-quality images. Build a richer prompt from the
-        // moment context + the script's own visual direction so the image
-        // reflects the actual moment (team/kit/setting), framed to avoid a
-        // wrong face being the subject (we can't render real player likenesses).
-        const images = [];
-        const sceneDirection = (script.mainContent?.sections || [])
-          .map(s => Array.isArray(s.visuals) ? s.visuals.join(', ') : s.visuals).filter(Boolean).join('; ');
-        const visualPrompt = this.agents.production.aiVideoGenerator.buildSceneImagePrompt(
-          moment.title, { hint: moment.hint, sceneDirection });
-        for (let i = 0; i < shortsConfig.imageCount; i++) {
-          const assets = await this.agents.production.aiVideoGenerator.generateVisualAssets(
-            visualPrompt, 'cinematic', 1,
-            { size: shortsConfig.imageSize, quality: shortsConfig.imageQuality, format: 'short' }
-          );
-          images.push(...assets);
-        }
-
-        // Stock clips: per-run override (req.body.useClips) > DB toggle > env.
-        const clipOpts = await this._resolveClipOptions(req.body && req.body.useClips);
-        const result = await this.shortsProducer.produce(script, images, clipOpts);
-        await this._ledgerFolderCost(result.folder, 'short', shortsConfig.outputDir);
-        await this.db.upsertContent({ folder: result.folder, type: 'short', title: script.title });
-        res.json({ success: true, folder: result.folder, title: script.title, moment: moment.title, useClips: clipOpts.useClips });
+        const moment = (req.body && req.body.moment) || null;
+        const useClips = req.body && req.body.useClips;
+        const { id } = await this.genQueue.enqueue({
+          kind: 'short',
+          label: moment || 'auto moment',
+          payload: { moment, useClips },
+        });
+        res.json({ success: true, queued: true, jobId: id,
+          message: 'Short queued for generation; it will render one-at-a-time.' });
       } catch (error) {
-        this.logger.error('Short generation failed:', error);
+        this.logger.error('Short enqueue failed:', error);
         res.status(500).json({ success: false, error: error.message });
       }
     });
@@ -624,18 +613,18 @@ class YouTubeAutomationAgent {
     // finished WC match. Manual/testing counterpart to the scheduled task.
     this.app.post('/generate-match', async (req, res) => {
       try {
-        const wc = require('./utils/worldcup-provider');
         const matchId = req.body && req.body.matchId;
         const formats = (req.body && req.body.formats) || ['long', 'short'];
-        const matches = await wc.getFinishedMatches({ logger: this.logger });
-        if (!matches.length) return res.status(404).json({ success: false, error: 'No finished WC matches found (check FOOTBALL_DATA_API_KEY / date window).' });
-        const match = matchId ? matches.find(m => m.id === matchId) : matches[matches.length - 1];
-        if (!match) return res.status(404).json({ success: false, error: `Match ${matchId} not found.` });
-        this.logger.info(`Generating match videos: ${match.homeTeam} ${match.homeScore}-${match.awayScore} ${match.awayTeam}`);
-        const result = await this.generateMatchVideos(match, { formats });
-        res.json({ success: true, match: `${match.homeTeam} ${match.homeScore}-${match.awayScore} ${match.awayTeam}`, result });
+        const { id } = await this.genQueue.enqueue({
+          kind: 'match_recap',
+          label: matchId ? `match ${matchId}` : 'latest match',
+          payload: { matchId, formats },
+          dedupKey: matchId ? `match_recap:${matchId}` : null,
+        });
+        res.json({ success: true, queued: true, jobId: id,
+          message: 'Match recap queued for generation.' });
       } catch (error) {
-        this.logger.error('Match video generation failed:', error);
+        this.logger.error('Match enqueue failed:', error);
         res.status(500).json({ success: false, error: error.message });
       }
     });
@@ -684,6 +673,85 @@ class YouTubeAutomationAgent {
         res.status(500).json({ success: false, error: error.message });
       }
     });
+  }
+
+  // Register the generation-queue runners. Each runner does the actual heavy work
+  // for one job kind; the queue calls them one at a time with a delay between.
+  _registerQueueRunners() {
+    this.genQueue.register('short', (payload) => this._runShortJob(payload));
+    this.genQueue.register('match_recap', (payload) => this._runMatchJob(payload));
+    // WC match recap (generate + auto-upload) — the scheduler enqueues these so
+    // the hourly batch serializes instead of thrashing the machine.
+    this.genQueue.register('wc-match', (payload) => this._runWcMatchJob(payload));
+  }
+
+  // Queue runner for a scheduled World Cup match: generate the recap in the
+  // requested format(s) and auto-upload at the given privacy. payload:
+  // { match, format, privacy }. The cron has already cross-checked the score and
+  // marked the seen-guard before enqueuing, so this just produces + uploads.
+  async _runWcMatchJob(payload = {}) {
+    const { match, format, privacy } = payload;
+    const result = await this.generateMatchVideos(match, { formats: [format] });
+    const { outputRoot, shortsRoot } = require('./utils/paths');
+    const path = require('path');
+    try {
+      if (format === 'long' && result.long?.folder) {
+        await this.agents.publishing.uploadOutputFolder(path.join(outputRoot(), result.long.folder), { privacyStatus: privacy });
+      } else if (format === 'short' && result.short?.folder) {
+        await this.agents.publishing.uploadOutputFolder(path.join(shortsRoot(), result.short.folder), { privacyStatus: privacy });
+      }
+    } catch (e) { this.logger.warn(`WC ${format} upload failed: ${e.message}`); }
+    return { format, fixture: `${match.homeTeam} ${match.homeScore}-${match.awayScore} ${match.awayTeam}` };
+  }
+
+  // Generate one fresh single-moment Short (the core of POST /generate-short),
+  // runnable from the queue. payload: { moment?, useClips? }. Returns a summary.
+  async _runShortJob(payload = {}) {
+    const shortsConfig = require('./utils/shorts-config');
+    const momentsProvider = require('./utils/football-moments-provider');
+    const forced = payload.moment;
+    const moment = forced
+      ? { title: forced, hint: '', recent: false }
+      : await momentsProvider.getMoment({ logger: this.logger });
+
+    this.logger.info(`Generating Short for moment: ${moment.title}`);
+    const script = await this.agents.scriptWriter.generateShortScript(moment);
+
+    const { CostMeter } = require('./utils/cost-meter');
+    this.agents.production.aiVideoGenerator.costMeter = new CostMeter();
+
+    const images = [];
+    const sceneDirection = (script.mainContent?.sections || [])
+      .map(s => Array.isArray(s.visuals) ? s.visuals.join(', ') : s.visuals).filter(Boolean).join('; ');
+    const visualPrompt = this.agents.production.aiVideoGenerator.buildSceneImagePrompt(
+      moment.title, { hint: moment.hint, sceneDirection });
+    for (let i = 0; i < shortsConfig.imageCount; i++) {
+      const assets = await this.agents.production.aiVideoGenerator.generateVisualAssets(
+        visualPrompt, 'cinematic', 1,
+        { size: shortsConfig.imageSize, quality: shortsConfig.imageQuality, format: 'short' }
+      );
+      images.push(...assets);
+    }
+
+    const clipOpts = await this._resolveClipOptions(payload.useClips);
+    const result = await this.shortsProducer.produce(script, images, clipOpts);
+    await this._ledgerFolderCost(result.folder, 'short', shortsConfig.outputDir);
+    await this.db.upsertContent({ folder: result.folder, type: 'short', title: script.title });
+    return { folder: result.folder, title: script.title, moment: moment.title };
+  }
+
+  // Generate recap videos for a match (the core of POST /generate-match), runnable
+  // from the queue. payload: { matchId?, formats? }.
+  async _runMatchJob(payload = {}) {
+    const wc = require('./utils/worldcup-provider');
+    const formats = payload.formats || ['long', 'short'];
+    const matches = await wc.getFinishedMatches({ logger: this.logger });
+    if (!matches.length) throw new Error('No finished WC matches found.');
+    const match = payload.matchId ? matches.find(m => m.id === payload.matchId) : matches[matches.length - 1];
+    if (!match) throw new Error(`Match ${payload.matchId} not found.`);
+    this.logger.info(`Generating match videos: ${match.homeTeam} ${match.homeScore}-${match.awayScore} ${match.awayTeam}`);
+    const result = await this.generateMatchVideos(match, { formats });
+    return { match: `${match.homeTeam} ${match.homeScore}-${match.awayScore} ${match.awayTeam}`, result };
   }
 
   // Resolve whether a Short should use stock clips, and in which mode. Precedence:

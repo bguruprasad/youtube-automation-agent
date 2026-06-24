@@ -624,6 +624,19 @@
       </p>
     </div>
     <div class="section">
+      <div class="section-title">
+        <span>⏳ Generation Queue</span>
+        <button class="btn btn-sm btn-outline" onclick="loadQueue()">Refresh</button>
+      </div>
+      <div id="generation-queue">
+        <div class="empty-state">Loading queue…</div>
+      </div>
+      <p class="info-note" style="margin-top:6px;">
+        Heavy generation (Shorts, recaps, long videos) runs <strong>one at a time</strong> with a short gap,
+        so concurrent renders don't overload the machine. Jobs survive a restart.
+      </p>
+    </div>
+    <div class="section">
       <div class="section-title">📋 Scheduled Tasks</div>
       <div id="automation-tasks">
         <div class="empty-state">Loading tasks…</div>
@@ -1344,6 +1357,43 @@
     function cronHuman(c) { return CRON_LABELS[c] || c || '—'; }
     function fmtDateTime(s) { return s ? new Date(s).toLocaleString() : '—'; }
 
+    async function loadQueue() {
+      const el = document.getElementById('generation-queue');
+      if (!el) return;
+      try {
+        const r = await (await fetch('/queue')).json();
+        if (!r.success) throw new Error(r.error || 'failed');
+        const q = r.queue;
+        const kindBadge = (k) => `<span class="run-badge">${escHtml(k)}</span>`;
+        const running = (q.running || []).map(j =>
+          `<div class="output-item"><div class="output-info">
+             <h4>▶ ${kindBadge(j.kind)} ${escHtml(j.label || '')}</h4>
+             <div class="folder-name">running since ${fmtDateTime(j.started_at)}</div>
+           </div></div>`).join('');
+        const pending = (q.pending || []).map((j, i) =>
+          `<div class="output-item"><div class="output-info">
+             <h4>#${i + 1} ${kindBadge(j.kind)} ${escHtml(j.label || '')}</h4>
+             <div class="folder-name">queued ${fmtDateTime(j.created_at)}</div>
+           </div></div>`).join('');
+        const recent = (q.recent || []).map(j =>
+          `<div class="output-item" style="opacity:.7"><div class="output-info">
+             <h4>${j.status === 'failed' ? '✗' : '✓'} ${kindBadge(j.kind)} ${escHtml(j.label || '')}
+               ${j.status === 'failed' ? `<span class="run-badge error">failed</span>` : ''}</h4>
+             <div class="folder-name">${escHtml(j.error || '')} ${fmtDateTime(j.finished_at)}</div>
+           </div></div>`).join('');
+        const gapSec = Math.round((q.delayMs || 0) / 1000);
+        el.innerHTML =
+          `<div class="info-note" style="margin-bottom:8px;">
+             ${q.pendingCount || 0} waiting · ${(q.running||[]).length ? '1 running' : 'idle'} · ${gapSec}s gap between jobs
+           </div>` +
+          (running || '') +
+          (pending || (running ? '' : '<div class="empty-state">Queue is empty.</div>')) +
+          (recent ? `<div class="idea-group-label" style="margin-top:10px;">Recent</div>${recent}` : '');
+      } catch (err) {
+        el.innerHTML = `<div class="empty-state" style="color:var(--red)">Queue: ${escHtml(err.message)}</div>`;
+      }
+    }
+
     async function loadAutomation() {
       const master = document.getElementById('automation-master');
       const tasksEl = document.getElementById('automation-tasks');
@@ -1889,7 +1939,7 @@
       document.getElementById('tab-engagement').style.display = name === 'engagement' ? '' : 'none';
       document.getElementById('tab-costs').style.display = name === 'costs' ? '' : 'none';
       if (name === 'shorts') loadShorts();
-      if (name === 'schedule') loadAutomation();
+      if (name === 'schedule') { loadAutomation(); loadQueue(); }
       if (name === 'analytics') { loadMonetization(); loadVideoAnalytics(); }
       if (name === 'engagement') loadComments();
       if (name === 'costs') loadCosts();

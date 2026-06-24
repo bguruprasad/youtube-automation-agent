@@ -257,6 +257,28 @@ class Database {
         read INTEGER DEFAULT 0,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP,
         updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+      )`,
+
+      // Generation job queue: serializes heavy video/short generation so only one
+      // runs at a time (concurrent ffmpeg/Flux thrash the machine and time out).
+      // DB-persisted so a restart resumes pending jobs. FIFO by created_at/id.
+      //   kind:    short | match_recap | long | daily-shorts
+      //   payload: JSON args the runner needs (e.g. {matchId, formats} or {moment})
+      //   status:  pending | running | done | failed
+      //   dedup_key: optional; an enqueue with an existing pending/running dedup_key
+      //              is skipped (so the same match isn't queued twice).
+      `CREATE TABLE IF NOT EXISTS generation_queue (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        kind TEXT NOT NULL,
+        label TEXT,
+        payload TEXT,
+        dedup_key TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        result TEXT,
+        error TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        started_at TEXT,
+        finished_at TEXT
       )`
     ];
 
@@ -667,6 +689,72 @@ class Database {
   async clearNotifications(id = null) {
     if (id != null) return this.executeQuery('DELETE FROM notifications WHERE id=?', [id]);
     return this.executeQuery('DELETE FROM notifications');
+  }
+
+  // ---- Generation queue ----------------------------------------------------
+  // Enqueue a generation job. Returns { id, deduped }. If dedupKey matches an
+  // existing pending/running job, skip (return that job's id, deduped:true).
+  async enqueueGeneration({ kind, label = '', payload = {}, dedupKey = null }) {
+    if (dedupKey) {
+      const existing = await this.getRow(
+        `SELECT id FROM generation_queue WHERE dedup_key=? AND status IN ('pending','running') LIMIT 1`,
+        [dedupKey]);
+      if (existing) return { id: existing.id, deduped: true };
+    }
+    const r = await this.executeQuery(
+      `INSERT INTO generation_queue (kind, label, payload, dedup_key) VALUES (?,?,?,?)`,
+      [kind, label, JSON.stringify(payload || {}), dedupKey]);
+    return { id: r.lastID, deduped: false };
+  }
+
+  // Claim the oldest pending job (FIFO) and mark it running. Returns the job row
+  // (with parsed payload) or null if the queue is empty.
+  async claimNextGeneration() {
+    const job = await this.getRow(
+      `SELECT * FROM generation_queue WHERE status='pending' ORDER BY id ASC LIMIT 1`);
+    if (!job) return null;
+    await this.executeQuery(
+      `UPDATE generation_queue SET status='running', started_at=datetime('now') WHERE id=?`, [job.id]);
+    try { job.payload = JSON.parse(job.payload || '{}'); } catch { job.payload = {}; }
+    return job;
+  }
+
+  async completeGeneration(id, result = null) {
+    await this.executeQuery(
+      `UPDATE generation_queue SET status='done', result=?, finished_at=datetime('now') WHERE id=?`,
+      [result ? JSON.stringify(result) : null, id]);
+  }
+
+  async failGeneration(id, errorMsg) {
+    await this.executeQuery(
+      `UPDATE generation_queue SET status='failed', error=?, finished_at=datetime('now') WHERE id=?`,
+      [String(errorMsg || 'error').slice(0, 500), id]);
+  }
+
+  // On startup, any job stuck in 'running' (server died mid-job) goes back to
+  // 'pending' so the worker re-attempts it. Returns the count re-queued.
+  async recoverStuckGenerations() {
+    const r = await this.executeQuery(
+      `UPDATE generation_queue SET status='pending', started_at=NULL WHERE status='running'`);
+    return r.changes || 0;
+  }
+
+  // Queue snapshot for the dashboard.
+  async getGenerationQueue({ limit = 50 } = {}) {
+    const pending = await this.getAllRows(
+      `SELECT id,kind,label,status,created_at FROM generation_queue WHERE status='pending' ORDER BY id ASC LIMIT ?`, [limit]);
+    const running = await this.getAllRows(
+      `SELECT id,kind,label,status,started_at FROM generation_queue WHERE status='running' ORDER BY id ASC`);
+    const recent = await this.getAllRows(
+      `SELECT id,kind,label,status,error,finished_at FROM generation_queue WHERE status IN ('done','failed') ORDER BY id DESC LIMIT 10`);
+    return { pending, running, recent, pendingCount: pending.length };
+  }
+
+  // Housekeeping: drop old finished rows so the table doesn't grow forever.
+  async pruneGenerationQueue(keepHours = 72) {
+    await this.executeQuery(
+      `DELETE FROM generation_queue WHERE status IN ('done','failed') AND finished_at < datetime('now', ?)`,
+      [`-${keepHours} hours`]);
   }
 
   // Utility methods

@@ -708,14 +708,16 @@ class AIVideoGenerator {
           : await this._makeTextOverlay(sectionTitle, tempDir, i, { width: W, height: H });
 
         // CLIP scene: render the real B-roll (cover-crop, no zoompan) with the
-        // same overlay. On any failure, fall through to the still path below.
+        // same overlay. Retry ONCE on failure (a timeout is usually transient
+        // machine load) before falling through to the still path below.
         if (scene.type === 'clip') {
           try {
-            await this._renderClipScene(scene.source, clipPath, clipDuration, textOverlay, { width: W, height: H });
+            await this._withRenderRetry(`Clip scene ${i}`, () =>
+              this._renderClipScene(scene.source, clipPath, clipDuration, textOverlay, { width: W, height: H }));
             clipPaths.push(clipPath);
             continue;
           } catch (e) {
-            this.logger.warn(`Clip scene ${i} render failed (${e.message}); falling back to still`);
+            this.logger.warn(`Clip scene ${i} render failed after retry (${e.message}); falling back to still`);
             if (this._lastClipMeta[i]) this._lastClipMeta[i] = { type: 'still', query: null };
           }
         }
@@ -723,16 +725,16 @@ class AIVideoGenerator {
         // CARD scene: accurate still as a centered card over a blurred clip bed.
         // The overlay (title band or scoreboard) is REBUILT at card dimensions
         // inside the renderer so its band sits flush at the top of the card (not
-        // floating mid-image). On any failure, fall through to the plain still
-        // path below.
+        // floating mid-image). Retry ONCE before falling through to the still.
         if (scene.type === 'card') {
           try {
-            await this._renderCardScene(scene.clip, scene.still, clipPath, clipDuration,
-              { match: options.match, sectionTitle }, { width: W, height: H }, i, tempDir);
+            await this._withRenderRetry(`Card scene ${i}`, () =>
+              this._renderCardScene(scene.clip, scene.still, clipPath, clipDuration,
+                { match: options.match, sectionTitle }, { width: W, height: H }, i, tempDir));
             clipPaths.push(clipPath);
             continue;
           } catch (e) {
-            this.logger.warn(`Card scene ${i} render failed (${e.message}); falling back to still`);
+            this.logger.warn(`Card scene ${i} render failed after retry (${e.message}); falling back to still`);
             if (this._lastClipMeta[i]) this._lastClipMeta[i] = { type: 'still', query: null };
           }
         }
@@ -1036,6 +1038,20 @@ class AIVideoGenerator {
    * zoompan (the clip already moves). Mirrors the still path's ffmpeg shape so
    * the resulting clip shares codec/fps/resolution and concats by stream-copy.
    */
+  // Run a render fn, retrying once on failure. A render timeout (ETIMEDOUT) is
+  // almost always transient machine load (the daily batch thrashing CPU); a brief
+  // pause + retry usually succeeds, avoiding a needless still fallback. Throws if
+  // the retry also fails (caller then falls back to a still).
+  async _withRenderRetry(label, fn) {
+    try {
+      return await fn();
+    } catch (e) {
+      this.logger.warn(`${label} render failed (${e.message}); retrying once after a short pause…`);
+      await new Promise((r) => setTimeout(r, 3000));
+      return await fn();
+    }
+  }
+
   // True if the file has at least one audio stream (used to verify a mux worked).
   _hasAudioStream(p) {
     try {
