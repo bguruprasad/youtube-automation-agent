@@ -211,6 +211,11 @@ class PublishingSchedulingAgent {
       }
     }
 
+    // Shorts: YouTube ignores custom thumbnails (it auto-generates one from the
+    // video) and a thumbnails.set call just burns API quota for nothing — so skip
+    // it entirely for Shorts. Long videos still set their thumbnail.
+    const isShort = script.format === 'short' ||
+      (script.meta && script.meta.type === 'short');
     const thumbPath = path.join(folderPath, 'thumbnail.png');
     const capPath = path.join(folderPath, 'captions.srt');
     const scheduleEntry = {
@@ -218,7 +223,7 @@ class PublishingSchedulingAgent {
       // No publishTime: we publish immediately (publishAt requires privacy=private).
       metadata: {
         video: { path: videoPath, simulated: false },
-        thumbnail: fs.existsSync(thumbPath) ? { path: thumbPath } : null,
+        thumbnail: (!isShort && fs.existsSync(thumbPath)) ? { path: thumbPath } : null,
         captions: fs.existsSync(capPath) ? { path: capPath } : null,
         seo: {
           title: (script.title || 'Untitled').slice(0, 100),
