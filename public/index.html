@@ -1247,6 +1247,15 @@
       return str.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;');
     }
 
+    // Escape a value for use inside a DOUBLE-QUOTED HTML attribute (data-*, etc.).
+    // Unlike escHtml (which leaves quotes intact) this also encodes " and ' so the
+    // attribute can't be broken out of — important for prompts full of apostrophes.
+    function escHtmlAttr(str) {
+      return String(str == null ? '' : str)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
     // --- Info (i) panel: cost + generation metadata ---
     function infoButton(title, cost, meta) {
       // Stash the data on a global keyed by index so the click handler can read
@@ -1644,7 +1653,7 @@
           ${idea.why ? `<div class="idea-why">${escHtml(idea.why)}</div>` : ''}
           <div class="idea-prompt-row">
             <code class="idea-prompt">${escHtml(prompt)}</code>
-            <button class="btn btn-sm btn-outline" onclick='copyIdeaPrompt(this, ${JSON.stringify(prompt)})'>Copy</button>
+            <button class="btn btn-sm btn-outline" data-prompt="${escHtmlAttr(prompt)}" onclick="copyIdeaPrompt(this, this.getAttribute('data-prompt'))">Copy</button>
           </div>
         </div>`;
       };
@@ -1666,10 +1675,30 @@
     }
 
     function copyIdeaPrompt(btn, text) {
-      navigator.clipboard.writeText(text).then(() => {
-        const orig = btn.textContent; btn.textContent = '✓ Copied'; btn.disabled = true;
+      const flash = (label) => {
+        const orig = btn.getAttribute('data-orig') || btn.textContent;
+        btn.setAttribute('data-orig', orig);
+        btn.textContent = label; btn.disabled = true;
         setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 1400);
-      }).catch(() => {});
+      };
+      // Prefer the async Clipboard API; fall back to execCommand for non-secure
+      // contexts (plain http://localhost where navigator.clipboard is undefined).
+      const fallbackCopy = () => {
+        try {
+          const ta = document.createElement('textarea');
+          ta.value = text;
+          ta.style.position = 'fixed'; ta.style.opacity = '0'; ta.style.top = '0';
+          document.body.appendChild(ta); ta.focus(); ta.select();
+          const ok = document.execCommand('copy');
+          document.body.removeChild(ta);
+          flash(ok ? '✓ Copied' : '⚠ Copy failed');
+        } catch { flash('⚠ Copy failed'); }
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(() => flash('✓ Copied')).catch(fallbackCopy);
+      } else {
+        fallbackCopy();
+      }
     }
 
     async function loadStrategyReview() {
