@@ -790,16 +790,32 @@ class AIVideoGenerator {
       }
     }
 
-    // Add audio
+    // Add audio. Do NOT silently swallow a mux failure and ship a silent video
+    // (that bit us once: a clip-scene timeout left the pipeline degraded and the
+    // narration was dropped). Retry once; only fall back to the silent video if
+    // the mux truly can't be done.
     let finalPath = videoPath;
-    if (audioPath) {
-      try {
-        if (fsSync.existsSync(audioPath) && fsSync.statSync(audioPath).size > 100) {
+    const haveAudio = audioPath && fsSync.existsSync(audioPath) && fsSync.statSync(audioPath).size > 100;
+    if (haveAudio) {
+      let muxed = false;
+      for (let attempt = 1; attempt <= 2 && !muxed; attempt++) {
+        try {
           await this.addAudioToVideo(videoPath, audioPath, outputPath);
-          try { await fs.unlink(videoPath); } catch {}
-          finalPath = outputPath;
+          // Verify the output actually has an audio stream before trusting it.
+          if (this._hasAudioStream(outputPath)) {
+            muxed = true;
+            try { await fs.unlink(videoPath); } catch {}
+            finalPath = outputPath;
+          } else {
+            throw new Error('output has no audio stream after mux');
+          }
+        } catch (e) {
+          this.logger.warn(`Audio mux attempt ${attempt}/2 failed: ${e.message}`);
         }
-      } catch {}
+      }
+      if (!muxed) this.logger.error('Audio mux failed after retries; shipping video WITHOUT audio');
+    } else if (audioPath) {
+      this.logger.warn('Narration audio missing/empty; video will have no audio');
     }
     if (finalPath === videoPath) {
       await fs.rename(videoPath, outputPath);
@@ -1008,6 +1024,28 @@ class AIVideoGenerator {
    * zoompan (the clip already moves). Mirrors the still path's ffmpeg shape so
    * the resulting clip shares codec/fps/resolution and concats by stream-copy.
    */
+  // True if the file has at least one audio stream (used to verify a mux worked).
+  _hasAudioStream(p) {
+    try {
+      const { execSync } = require('child_process');
+      const out = execSync(`ffprobe -v error -select_streams a -show_entries stream=codec_type -of csv=p=0 "${p}"`,
+        { stdio: ['pipe', 'pipe', 'pipe'], timeout: 15000 }).toString().trim();
+      return /audio/.test(out);
+    } catch { return false; }
+  }
+
+  // Probe a media file's duration (seconds) via ffprobe. Synchronous; returns
+  // null on failure (caller picks a sane default).
+  _probeDuration(p) {
+    try {
+      const { execSync } = require('child_process');
+      const out = execSync(`ffprobe -v error -show_entries format=duration -of csv=p=0 "${p}"`,
+        { stdio: ['pipe', 'pipe', 'pipe'], timeout: 15000 }).toString().trim();
+      const d = parseFloat(out);
+      return Number.isFinite(d) && d > 0 ? d : null;
+    } catch { return null; }
+  }
+
   async _renderClipScene(srcClip, clipPath, clipDuration, textOverlay, dims) {
     const { execSync } = require('child_process');
     const W = dims.width || 1920, H = dims.height || 1080, fps = 30;
@@ -1016,14 +1054,20 @@ class AIVideoGenerator {
     const base = `scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},` +
       `fps=${fps},fade=in:0:${Math.min(15, totalFrames)},fade=out:${Math.max(0, totalFrames - 15)}:15`;
     const enc = `-c:v libx264 -preset veryfast -threads 0 -pix_fmt yuv420p -r ${fps}`;
-    // -stream_loop -1 loops a short source to fill clipDuration; -t trims it.
-    const timeout = Math.max(120000, Math.ceil(clipDuration) * 8000);
+    // Loop the source to fill clipDuration. -stream_loop with an explicit count
+    // (not -1) avoids ffmpeg over-decoding an unbounded loop, which could crawl
+    // and time out on long scenes. -t still trims to the exact duration. -an
+    // drops the source clip's own audio (we mux narration later).
+    const srcDur = this._probeDuration(srcClip) || 8;
+    const loops = Math.min(50, Math.ceil(clipDuration / Math.max(1, srcDur)) + 1);
+    const enc2 = `${enc} -an`;
+    const timeout = Math.max(180000, Math.ceil(clipDuration) * 12000);
     let cmd;
     if (textOverlay) {
-      cmd = `ffmpeg -y -stream_loop -1 -i "${srcClip}" -i "${textOverlay}" -t ${clipDuration} ` +
-        `-filter_complex "[0:v]${base}[bg];[bg][1:v]overlay=0:0:format=auto" ${enc} "${clipPath}"`;
+      cmd = `ffmpeg -y -stream_loop ${loops} -i "${srcClip}" -i "${textOverlay}" -t ${clipDuration} ` +
+        `-filter_complex "[0:v]${base}[bg];[bg][1:v]overlay=0:0:format=auto" ${enc2} "${clipPath}"`;
     } else {
-      cmd = `ffmpeg -y -stream_loop -1 -i "${srcClip}" -t ${clipDuration} -vf "${base}" ${enc} "${clipPath}"`;
+      cmd = `ffmpeg -y -stream_loop ${loops} -i "${srcClip}" -t ${clipDuration} -vf "${base}" ${enc2} "${clipPath}"`;
     }
     execSync(cmd, { stdio: 'pipe', timeout });
     return clipPath;
@@ -1113,8 +1157,11 @@ class AIVideoGenerator {
     const cardPad = Math.round((card.w - cardW) / 2); // shadow margin per side
     const innerX = cx + cardPad;                      // left edge of the still
     const innerY = cy + cardPad;                      // top edge of the still
-    const enc = `-c:v libx264 -preset veryfast -threads 0 -pix_fmt yuv420p -r ${fps}`;
-    const timeout = Math.max(120000, Math.ceil(clipDuration) * 8000);
+    // Bounded loop count (not -1) so the bg clip never over-decodes and stalls.
+    const srcDur = this._probeDuration(srcClip) || 8;
+    const loops = Math.min(50, Math.ceil(clipDuration / Math.max(1, srcDur)) + 1);
+    const enc = `-c:v libx264 -preset veryfast -threads 0 -pix_fmt yuv420p -r ${fps} -an`;
+    const timeout = Math.max(180000, Math.ceil(clipDuration) * 12000);
 
     // Inputs: [0]=clip (looped), [1]=card PNG, [2]=card-sized overlay (optional),
     // [3]=rounded mask. [0]->bg; bg+card -> [c]; overlay (clipped to the card's
@@ -1131,7 +1178,7 @@ class AIVideoGenerator {
       );
       const maskPath = path.join(tempDir, `cardmask_${index}.png`);
       await sharp(maskSvg).removeAlpha().png().toFile(maskPath);
-      cmd = `ffmpeg -y -stream_loop -1 -i "${srcClip}" -i "${card.path}" -i "${cardOverlay}" -i "${maskPath}" -t ${clipDuration} ` +
+      cmd = `ffmpeg -y -stream_loop ${loops} -i "${srcClip}" -i "${card.path}" -i "${cardOverlay}" -i "${maskPath}" -t ${clipDuration} ` +
         `-filter_complex "[0:v]${bg}[bg];[bg][1:v]overlay=${cx}:${cy}[c];` +
         `[2:v]format=rgba,split[txa][txb];` +
         `[txa]alphaextract[oa];` +
@@ -1141,7 +1188,7 @@ class AIVideoGenerator {
         `[c][txtr]overlay=${innerX}:${innerY}:format=auto" ` +
         `${enc} "${clipPath}"`;
     } else {
-      cmd = `ffmpeg -y -stream_loop -1 -i "${srcClip}" -i "${card.path}" -t ${clipDuration} ` +
+      cmd = `ffmpeg -y -stream_loop ${loops} -i "${srcClip}" -i "${card.path}" -t ${clipDuration} ` +
         `-filter_complex "[0:v]${bg}[bg];[bg][1:v]overlay=${cx}:${cy}" ${enc} "${clipPath}"`;
     }
     execSync(cmd, { stdio: 'pipe', timeout });
