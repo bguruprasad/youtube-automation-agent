@@ -710,8 +710,9 @@ class AIVideoGenerator {
         // BOLD FIRST-FRAME HOOK: on the opening scene only, burn a big curiosity-gap
         // line across the top (the single biggest Shorts retention lever). Merged
         // into the scene's overlay PNG so every scene-type path (clip/card/still)
-        // shows it. Portrait/Shorts only by default. options.hookText drives it.
-        if (i === 0 && options.hookText && H > W) {
+        // shows it. Portrait/Shorts only. Skipped on match recaps (options.match) —
+        // the scoreboard is already the hook and a text hook would collide.
+        if (i === 0 && options.hookText && H > W && !options.match) {
           try {
             textOverlay = await this._mergeHookOverlay(textOverlay, options.hookText, tempDir, { width: W, height: H });
           } catch (e) { this.logger.warn(`Hook overlay failed: ${e.message}`); }
@@ -739,7 +740,9 @@ class AIVideoGenerator {
         if (scene.type === 'card') {
           // First-frame hook also applies to card scenes (the default scene type),
           // so pass it into the card renderer (which rebuilds its own overlay).
-          const cardHook = (i === 0 && options.hookText && H > W) ? options.hookText : null;
+          // BUT skip it on match recaps — the scoreboard (crests + score) is
+          // already the visual hook, and a text hook would collide with it.
+          const cardHook = (i === 0 && options.hookText && H > W && !options.match) ? options.hookText : null;
           try {
             await this._withRenderRetry(`Card scene ${i}`, () =>
               this._renderCardScene(scene.clip, scene.still, clipPath, clipDuration,
