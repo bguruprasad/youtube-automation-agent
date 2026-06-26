@@ -63,31 +63,105 @@ class ShortsProducer {
     return parts.join(' ');
   }
 
-  // Build SEO for a short: reuse the SEO agent's description/tags, append #Shorts.
-  async buildShortSeo(script) {
-    const strategy = (script.metadata && script.metadata.strategy) || {
-      topic: script.title, angle: '', keywords: script.keywords || [],
-      targetAudience: 'football fans', contentType: 'List'
-    };
-    let description = (script.hook && script.hook.text) || script.title;
-    let tags = script.keywords || [];
-    try {
-      const { SEOOptimizerAgent } = require('../agents/seo-optimizer-agent');
-      const seo = Object.create(SEOOptimizerAgent.prototype);
-      description = await seo.generateDescription(script, strategy);
-      tags = await seo.generateTags(script, strategy);
-    } catch (e) {
-      this.logger.warn(`Short SEO fell back to minimal: ${e.message}`);
-    }
-    // Shorts need #Shorts to be classified. Put it at the TOP: YouTube can
-    // truncate content after a later hashtag block, so a trailing #Shorts may
-    // be dropped. A leading hashtag line is reliable and still valid.
-    description = `#Shorts #Football #Soccer\n\n` + description.replace(/\n*#Shorts[^\n]*/gi, '').trim();
+  // Extract real football ENTITIES (players, teams) from the title/moment text so
+  // tags & hashtags are things fans actually search — not generic junk. Returns
+  // { players:[], teams:[], hashtags:[] }. Heuristic + a small curated list; the
+  // LLM step adds more. Conservative: only confident matches.
+  _extractEntities(text) {
+    const t = ` ${(text || '').toLowerCase()} `;
+    // Curated football entities (extend over time). Each: search term + hashtag.
+    const PLAYERS = [
+      ['messi', 'Messi'], ['ronaldo', 'Ronaldo'], ['cristiano', 'Ronaldo'],
+      ['mbappe', 'Mbappe'], ['mbappé', 'Mbappe'], ['haaland', 'Haaland'],
+      ['neymar', 'Neymar'], ['iniesta', 'Iniesta'], ['zidane', 'Zidane'],
+      ['benzema', 'Benzema'], ['salah', 'Salah'], ['kane', 'Kane'],
+      ['bellingham', 'Bellingham'], ['vinicius', 'Vinicius'], ['modric', 'Modric'],
+      ['suarez', 'Suarez'], ['lewandowski', 'Lewandowski'], ['havertz', 'Havertz'],
+    ];
+    const TEAMS = [
+      ['spain', 'Spain'], ['france', 'France'], ['england', 'England'],
+      ['brazil', 'Brazil'], ['argentina', 'Argentina'], ['germany', 'Germany'],
+      ['portugal', 'Portugal'], ['netherlands', 'Netherlands'], ['italy', 'Italy'],
+      ['croatia', 'Croatia'], ['belgium', 'Belgium'], ['liverpool', 'Liverpool'],
+      ['barcelona', 'Barcelona'], ['real madrid', 'RealMadrid'], ['atletico', 'Atletico'],
+    ];
+    const players = [], teams = [];
+    for (const [kw, name] of PLAYERS) if (t.includes(` ${kw}`)) players.push(name);
+    for (const [kw, name] of TEAMS) if (t.includes(kw)) teams.push(name);
     return {
-      title: (script.title || 'Football Short').slice(0, 100),
+      players: [...new Set(players)],
+      teams: [...new Set(teams)],
+    };
+  }
+
+  // Ask the LLM for a SCROLL-STOPPING title + a tight 1-2 line hook description.
+  // Shorts live or die on the title hook; this is a cheap gpt-4o-mini call.
+  // Returns { title, description } or null on failure (caller falls back).
+  async _llmShortTitleDesc(script, entities) {
+    const openai = this.gen && this.gen.openai;
+    if (!openai) return null;
+    const subject = script.title || (script.hook && script.hook.text) || 'football moment';
+    const ents = [...entities.players, ...entities.teams].join(', ');
+    const sys = 'You write YouTube SHORTS metadata for a football (soccer) highlights channel. ' +
+      'Goal: maximize click-through and watch time. Be punchy, emotional, curiosity-driven. ' +
+      'NEVER use "tutorial", "how to", "for beginners", "top 10", "countdown", or listicle phrasing. ' +
+      'Sound like an excited football fan, factual, no invented stats.';
+    const user = `Football moment: "${subject}".${ents ? ` Featuring: ${ents}.` : ''}\n` +
+      `Return STRICT JSON: {"title": "...", "description": "..."}\n` +
+      `- title: <= 70 chars, a scroll-stopping hook (a curiosity gap or bold claim), may use ONE emoji. No hashtags.\n` +
+      `- description: 1-2 short sentences that hook the viewer and tease the moment. No timestamps, no "what you'll learn", no "like and subscribe" filler.`;
+    try {
+      const resp = await openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'system', content: sys }, { role: 'user', content: user }],
+        temperature: 0.8,
+        max_tokens: 200,
+        response_format: { type: 'json_object' },
+      });
+      if (this.gen.costMeter) this.gen.costMeter.recordLLM('gpt-4o-mini', resp.usage, { label: 'Short SEO' });
+      const out = JSON.parse(resp.choices[0].message.content);
+      if (out && out.title) return { title: String(out.title).slice(0, 100), description: String(out.description || '').trim() };
+    } catch (e) {
+      this.logger.warn(`Short SEO LLM failed (${e.message}); using fallback title/desc`);
+    }
+    return null;
+  }
+
+  // Build SEO for a Short, PURPOSE-BUILT for short-form football (not the long
+  // video tutorial/list template, which produced junk like "how to X tutorial"
+  // tags). Hooky LLM title + description, fan-searched hashtags, real entity tags.
+  async buildShortSeo(script) {
+    const baseText = `${script.title || ''} ${(script.hook && script.hook.text) || ''}`;
+    const entities = this._extractEntities(baseText);
+
+    // Title + description: LLM hook, with a safe fallback.
+    const llm = await this._llmShortTitleDesc(script, entities);
+    let title = (llm && llm.title) || script.title || 'Football Short';
+    let hook = (llm && llm.description) || (script.hook && script.hook.text) || script.title || '';
+
+    // Hashtags fans actually search. Lead with #Shorts (YouTube can truncate
+    // content after a later hashtag block, so a leading line is reliable).
+    const entHashtags = [...entities.players, ...entities.teams].map(e => `#${e}`);
+    const hashtags = ['#Shorts', '#Football', '#Soccer', ...entHashtags, '#WorldCup', '#Goals']
+      .filter((h, i, a) => a.indexOf(h) === i).slice(0, 10);
+
+    const description = `${hashtags.join(' ')}\n\n${hook}`.trim();
+
+    // Tags: REAL entities + football staples. No tutorial/list junk. <=15 tags,
+    // each a clean searchable term.
+    const tagSet = [];
+    entities.players.forEach(p => tagSet.push(p, `${p} goals`, `${p} skills`));
+    entities.teams.forEach(t => tagSet.push(t, `${t} football`));
+    tagSet.push('football', 'soccer', 'football shorts', 'football skills',
+      'soccer goals', 'world cup 2026', 'football highlights');
+    const tags = [...new Set(tagSet.map(s => s.toLowerCase()))]
+      .filter(s => s && s.length <= 30).slice(0, 15);
+
+    return {
+      title: title.slice(0, 100),
       description,
-      tags: Array.isArray(tags) ? tags.slice(0, 30) : [],
-      metadata: { category: 17, language: 'en' } // 17 = Sports
+      tags,
+      metadata: { category: 17, language: 'en' }, // 17 = Sports
     };
   }
 

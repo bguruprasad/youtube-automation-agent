@@ -882,8 +882,14 @@ class YouTubeAutomationAgent {
       .slice(0, 15);
 
     const base = (script.hook && script.hook.text) ? script.hook.text : `${fixture} — ${comp} recap.`;
+    // Shorts: lead with searchable football hashtags + team hashtags (fans search
+    // these), not generic ones. Keep the fixture+comp line for entity/search.
+    const teamTags = [match.homeTeam, match.awayTeam]
+      .filter(Boolean).map(t => '#' + String(t).replace(/[^A-Za-z0-9]/g, ''));
+    const hashLine = ['#Shorts', '#Football', '#Soccer', ...teamTags, '#WorldCup']
+      .filter((h, i, a) => a.indexOf(h) === i).slice(0, 10).join(' ');
     const description = isShort
-      ? `#Shorts #Football #Soccer\n\n${base}\n\n${fixture} | ${comp}`
+      ? `${hashLine}\n\n${base}\n\n${fixture} | ${comp}`
       : `${base}\n\n${fixture} | ${comp}\n\nAutomated match recap.`;
 
     return {
