@@ -625,16 +625,21 @@
     </div>
     <div class="section">
       <div class="section-title">
-        <span>⏳ Generation Queue</span>
+        <span style="cursor:pointer;display:flex;align-items:center;gap:8px;" onclick="toggleCollapse('queue')">
+          <span id="queue-chevron" class="collapse-chevron">▼</span>⏳ Generation Queue
+          <span id="queue-summary" style="font-size:0.8rem;color:var(--text-dim);font-weight:normal;"></span>
+        </span>
         <button class="btn btn-sm btn-outline" onclick="loadQueue()">Refresh</button>
       </div>
-      <div id="generation-queue">
-        <div class="empty-state">Loading queue…</div>
+      <div id="queue-body">
+        <div id="generation-queue">
+          <div class="empty-state">Loading queue…</div>
+        </div>
+        <p class="info-note" style="margin-top:6px;">
+          Heavy generation (Shorts, recaps, long videos) runs <strong>one at a time</strong> with a short gap,
+          so concurrent renders don't overload the machine. Jobs survive a restart.
+        </p>
       </div>
-      <p class="info-note" style="margin-top:6px;">
-        Heavy generation (Shorts, recaps, long videos) runs <strong>one at a time</strong> with a short gap,
-        so concurrent renders don't overload the machine. Jobs survive a restart.
-      </p>
     </div>
     <div class="section">
       <div class="section-title">📋 Scheduled Tasks</div>
@@ -1124,9 +1129,14 @@
         if (data.success) {
           if (statusEl) {
             statusEl.style.color = 'var(--green,#3fb950)';
-            statusEl.textContent = `✅ Created "${data.title}" (${data.folder})`;
+            // Generation now runs through the queue, so the response is a job id,
+            // not a finished folder. Tell the user it's queued and point them at
+            // the Schedule tab's queue widget.
+            statusEl.textContent = data.queued
+              ? `✅ Queued (job #${data.jobId}). It renders one-at-a-time — see the Generation Queue on the Schedule tab.`
+              : `✅ Created "${data.title}" (${data.folder})`;
           }
-          if (typeof loadShorts === 'function') setTimeout(loadShorts, 1000);
+          if (typeof loadShorts === 'function') setTimeout(loadShorts, 1500);
         } else { throw new Error(data.error || 'Failed'); }
       } catch (err) {
         if (statusEl) { statusEl.style.color = 'var(--red,#f85149)'; statusEl.textContent = '❌ ' + err.message; }
@@ -1206,12 +1216,15 @@
 
       btn.disabled = true;
       const original = btn.textContent;
-      let done = 0, failed = 0, uploaded = 0, uploadFailed = 0;
+      let queued = 0, failed = 0;
 
-      // Generate sequentially — Short production is heavy (images + ffmpeg).
+      // Enqueue each — generation now runs through the queue (one at a time).
+      // Auto-upload can't happen inline anymore (the folder doesn't exist until
+      // the queue processes the job), so these are queued only; upload from the
+      // Shorts tab once they finish.
       for (const title of titles) {
-        if (statusEl) { statusEl.style.color = ''; statusEl.textContent = `Creating ${done + failed + 1}/${titles.length}: ${title}...`; }
-        btn.textContent = `⏳ ${done + failed + 1}/${titles.length}`;
+        if (statusEl) { statusEl.style.color = ''; statusEl.textContent = `Queuing ${queued + failed + 1}/${titles.length}: ${title}...`; }
+        btn.textContent = `⏳ ${queued + failed + 1}/${titles.length}`;
         try {
           const res = await fetch('/generate-short', {
             method: 'POST',
@@ -1220,33 +1233,20 @@
           });
           const data = await res.json();
           if (!data.success) { failed++; continue; }
-          done++;
-
-          if (autoUpload && data.folder) {
-            if (statusEl) statusEl.textContent = `Uploading ${done}/${titles.length}: ${title}...`;
-            btn.textContent = `⬆ ${done}/${titles.length}`;
-            try {
-              const up = await fetch('/upload-short/' + encodeURIComponent(data.folder), {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ privacy })
-              });
-              const upData = await up.json();
-              if (upData.success) uploaded++; else uploadFailed++;
-            } catch { uploadFailed++; }
-          }
+          queued++;
         } catch { failed++; }
       }
 
       btn.disabled = false;
       btn.textContent = original;
       if (statusEl) {
-        statusEl.style.color = (failed || uploadFailed) ? 'var(--red,#f85149)' : 'var(--green,#3fb950)';
-        let msg = `✅ Created ${done}/${titles.length}` + (failed ? ` (${failed} failed)` : '');
-        if (autoUpload) msg += ` · ⬆ Uploaded ${uploaded}/${done}` + (uploadFailed ? ` (${uploadFailed} failed)` : '');
+        statusEl.style.color = failed ? 'var(--red,#f85149)' : 'var(--green,#3fb950)';
+        let msg = `✅ Queued ${queued}/${titles.length}` + (failed ? ` (${failed} failed)` : '') +
+          ' — they render one-at-a-time (see Schedule → Generation Queue).';
+        if (autoUpload) msg += ' Note: auto-upload is skipped for queued Shorts; upload from the Shorts tab when ready.';
         statusEl.textContent = msg;
       }
-      if (typeof loadShorts === 'function') setTimeout(loadShorts, 1000);
+      if (typeof loadShorts === 'function') setTimeout(loadShorts, 1500);
     }
 
     // --- Helpers ---
@@ -1359,6 +1359,7 @@
 
     async function loadQueue() {
       const el = document.getElementById('generation-queue');
+      const summaryEl = document.getElementById('queue-summary');
       if (!el) return;
       try {
         const r = await (await fetch('/queue')).json();
@@ -1382,13 +1383,29 @@
              <div class="folder-name">${escHtml(j.error || '')} ${fmtDateTime(j.finished_at)}</div>
            </div></div>`).join('');
         const gapSec = Math.round((q.delayMs || 0) / 1000);
+        const activeCount = (q.running || []).length + (q.pendingCount || 0);
+
+        // Summary chip (visible even when the section is collapsed).
+        if (summaryEl) summaryEl.textContent = activeCount
+          ? `— ${(q.running||[]).length ? '1 running' : 'idle'}, ${q.pendingCount || 0} waiting`
+          : '— idle';
+
         el.innerHTML =
           `<div class="info-note" style="margin-bottom:8px;">
              ${q.pendingCount || 0} waiting · ${(q.running||[]).length ? '1 running' : 'idle'} · ${gapSec}s gap between jobs
            </div>` +
           (running || '') +
           (pending || (running ? '' : '<div class="empty-state">Queue is empty.</div>')) +
-          (recent ? `<div class="idea-group-label" style="margin-top:10px;">Recent</div>${recent}` : '');
+          // Recent jobs are behind their own collapsed-by-default toggle so old
+          // messages don't pile up in view.
+          (recent ? `
+            <div style="margin-top:10px;cursor:pointer;font-size:0.85rem;color:var(--text-dim);" onclick="toggleCollapse('queue-recent')">
+              <span id="queue-recent-chevron" class="collapse-chevron collapsed">▼</span> Recent jobs (${(q.recent||[]).length})
+            </div>
+            <div id="queue-recent-body" style="display:none;">${recent}</div>` : '');
+
+        // Keep recent collapsed unless the user expanded it before.
+        restoreCollapse('queue-recent');
       } catch (err) {
         el.innerHTML = `<div class="empty-state" style="color:var(--red)">Queue: ${escHtml(err.message)}</div>`;
       }
@@ -1939,7 +1956,7 @@
       document.getElementById('tab-engagement').style.display = name === 'engagement' ? '' : 'none';
       document.getElementById('tab-costs').style.display = name === 'costs' ? '' : 'none';
       if (name === 'shorts') loadShorts();
-      if (name === 'schedule') { loadAutomation(); loadQueue(); }
+      if (name === 'schedule') { loadAutomation(); loadQueue().then(() => restoreCollapse('queue')); }
       if (name === 'analytics') { loadMonetization(); loadVideoAnalytics(); }
       if (name === 'engagement') loadComments();
       if (name === 'costs') loadCosts();
