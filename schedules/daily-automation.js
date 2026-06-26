@@ -15,7 +15,7 @@ class DailyAutomation {
     // the scheduledTasks Map keys.
     this.taskMeta = {
       'daily-content-generation': { cron: '0 6 * * *', label: 'Daily content generation (long video)', run: () => this.runDailyContentGeneration() },
-      'daily-shorts-generation': { cron: '0 7 * * *', label: 'Daily Shorts generation', run: () => this.runDailyShortsGeneration() },
+      'daily-shorts-generation': { cron: '0 7 * * *', label: 'Daily Shorts generation (auto-upload)', run: () => this.runDailyShortsGeneration() },
       'worldcup-shorts': { cron: '0 * * * *', label: 'World Cup match SHORTS (polls hourly; vertical recap after full-time, second-source score cross-check, auto-upload unlisted)', run: () => this.runWorldCupShorts() },
       'worldcup-longs':  { cron: '0 * * * *', label: 'World Cup match LONG recaps (polls hourly; landscape recap, second-source score cross-check, auto-upload unlisted)', run: () => this.runWorldCupLongs() },
       'comment-engagement': { cron: '0 */2 * * *', label: 'Comment engagement (drafts replies to new comments into the review queue every 2h)', run: () => this.runCommentEngagement() },
@@ -316,6 +316,10 @@ class DailyAutomation {
         ? await this.app._resolveClipOptions(null) : { useClips: false, clipMode: 'mix' };
       if (clipOpts.useClips) this.logger.info(`Daily Shorts will layer stock clips (mode=${clipOpts.clipMode})`);
 
+      // Auto-upload daily Shorts (privacy from daily_shorts_privacy, default public).
+      const dailyPrivacy = (await this.db.getSetting('daily_shorts_privacy')) || 'public';
+      this.logger.info(`Daily Shorts will auto-upload as ${dailyPrivacy}`);
+
       // Dedup: don't repeat a moment used recently (within this run OR the last
       // ~14 days). Persisted as a capped list of normalized titles.
       const norm = (t) => String(t || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
@@ -348,7 +352,7 @@ class DailyAutomation {
             await this.app.genQueue.enqueue({
               kind: 'short',
               label: moment.title,
-              payload: { moment: moment.title },
+              payload: { moment: moment.title, autoUpload: true, privacy: dailyPrivacy },
             });
             made.push({ title: moment.title, queued: true });
           } else {
@@ -366,6 +370,10 @@ class DailyAutomation {
             const result = await producer.produce(script, images, clipOpts);
             if (this.app && this.app._ledgerFolderCost) await this.app._ledgerFolderCost(result.folder, 'short', shortsConfig.outputDir);
             await this.db.upsertContent({ folder: result.folder, type: 'short', title: script.title });
+            try {
+              const fp = require('path').join(shortsConfig.outputDir, result.folder);
+              await this.agents.publishing.uploadOutputFolder(fp, { privacyStatus: dailyPrivacy });
+            } catch (e) { this.logger.warn(`Daily Short upload failed: ${e.message}`); }
             made.push({ folder: result.folder, title: script.title });
           }
         } catch (e) {

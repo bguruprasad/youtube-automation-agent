@@ -737,7 +737,21 @@ class YouTubeAutomationAgent {
     const result = await this.shortsProducer.produce(script, images, clipOpts);
     await this._ledgerFolderCost(result.folder, 'short', shortsConfig.outputDir);
     await this.db.upsertContent({ folder: result.folder, type: 'short', title: script.title });
-    return { folder: result.folder, title: script.title, moment: moment.title };
+
+    // Auto-upload when requested (daily-shorts cron sets this). Privacy comes
+    // from the payload (resolved by the cron from the daily_shorts_privacy
+    // setting). Manual /generate-short jobs don't set autoUpload, so they stay
+    // drafts for the operator to publish.
+    let uploaded = null;
+    if (payload.autoUpload) {
+      try {
+        const fp = require('path').join(shortsConfig.outputDir, result.folder);
+        const up = await this.agents.publishing.uploadOutputFolder(fp, { privacyStatus: payload.privacy || 'public' });
+        uploaded = up && up.url ? up.url : true;
+        this.logger.info(`Daily Short auto-uploaded (${payload.privacy || 'public'}): ${up && up.url}`);
+      } catch (e) { this.logger.warn(`Daily Short auto-upload failed: ${e.message}`); }
+    }
+    return { folder: result.folder, title: script.title, moment: moment.title, uploaded };
   }
 
   // Generate recap videos for a match (the core of POST /generate-match), runnable
