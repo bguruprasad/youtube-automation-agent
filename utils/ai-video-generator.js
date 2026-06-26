@@ -737,10 +737,13 @@ class AIVideoGenerator {
         // inside the renderer so its band sits flush at the top of the card (not
         // floating mid-image). Retry ONCE before falling through to the still.
         if (scene.type === 'card') {
+          // First-frame hook also applies to card scenes (the default scene type),
+          // so pass it into the card renderer (which rebuilds its own overlay).
+          const cardHook = (i === 0 && options.hookText && H > W) ? options.hookText : null;
           try {
             await this._withRenderRetry(`Card scene ${i}`, () =>
               this._renderCardScene(scene.clip, scene.still, clipPath, clipDuration,
-                { match: options.match, sectionTitle }, { width: W, height: H }, i, tempDir));
+                { match: options.match, sectionTitle, hookText: cardHook }, { width: W, height: H }, i, tempDir));
             clipPaths.push(clipPath);
             continue;
           } catch (e) {
@@ -1201,6 +1204,14 @@ class AIVideoGenerator {
     const enc = `-c:v libx264 -preset veryfast -threads 0 -pix_fmt yuv420p -r ${fps} -an`;
     const timeout = Math.max(180000, Math.ceil(clipDuration) * 12000);
 
+    // Bold first-frame HOOK: a FULL-FRAME overlay (not card-confined) composited
+    // last, on top of everything. Built hook-only at full W×H.
+    let hookPath = null;
+    if (overlaySpec && overlaySpec.hookText) {
+      try { hookPath = await this._mergeHookOverlay(null, overlaySpec.hookText, tempDir, { width: W, height: H }); }
+      catch (e) { this.logger.warn(`Card hook overlay failed: ${e.message}`); }
+    }
+
     // Inputs: [0]=clip (looped), [1]=card PNG, [2]=card-sized overlay (optional),
     // [3]=rounded mask. [0]->bg; bg+card -> [c]; overlay (clipped to the card's
     // rounded corners so its band top follows the curve) -> on top at the still.
@@ -1216,18 +1227,22 @@ class AIVideoGenerator {
       );
       const maskPath = path.join(tempDir, `cardmask_${index}.png`);
       await sharp(maskSvg).removeAlpha().png().toFile(maskPath);
-      cmd = `ffmpeg -y -stream_loop ${loops} -i "${srcClip}" -i "${card.path}" -i "${cardOverlay}" -i "${maskPath}" -t ${clipDuration} ` +
+      const hookIn = hookPath ? ` -i "${hookPath}"` : '';
+      const hookFilter = hookPath ? `[withcard][4:v]overlay=0:0:format=auto` : null;
+      cmd = `ffmpeg -y -stream_loop ${loops} -i "${srcClip}" -i "${card.path}" -i "${cardOverlay}" -i "${maskPath}"${hookIn} -t ${clipDuration} ` +
         `-filter_complex "[0:v]${bg}[bg];[bg][1:v]overlay=${cx}:${cy}[c];` +
         `[2:v]format=rgba,split[txa][txb];` +
         `[txa]alphaextract[oa];` +
         `[3:v]format=gray[mk];` +
         `[oa][mk]blend=all_mode=multiply[a2];` +
         `[txb][a2]alphamerge[txtr];` +
-        `[c][txtr]overlay=${innerX}:${innerY}:format=auto" ` +
+        `[c][txtr]overlay=${innerX}:${innerY}:format=auto${hookFilter ? '[withcard];' + hookFilter : ''}" ` +
         `${enc} "${clipPath}"`;
     } else {
-      cmd = `ffmpeg -y -stream_loop ${loops} -i "${srcClip}" -i "${card.path}" -t ${clipDuration} ` +
-        `-filter_complex "[0:v]${bg}[bg];[bg][1:v]overlay=${cx}:${cy}" ${enc} "${clipPath}"`;
+      const hookIn = hookPath ? ` -i "${hookPath}"` : '';
+      const hookFilter = hookPath ? `[withcard][2:v]overlay=0:0:format=auto` : null;
+      cmd = `ffmpeg -y -stream_loop ${loops} -i "${srcClip}" -i "${card.path}"${hookIn} -t ${clipDuration} ` +
+        `-filter_complex "[0:v]${bg}[bg];[bg][1:v]overlay=${cx}:${cy}${hookFilter ? '[withcard];' + hookFilter : ''}" ${enc} "${clipPath}"`;
     }
     execSync(cmd, { stdio: 'pipe', timeout });
     return clipPath;
