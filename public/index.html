@@ -204,9 +204,17 @@
       border: 1px solid var(--border);
       border-radius: 8px;
       padding: 16px;
-      transition: border-color 0.2s;
+      transition: border-color 0.2s, background 0.2s, box-shadow 0.2s;
+      user-select: none;
     }
     .suggestion-card:hover { border-color: var(--accent); }
+    /* Whole tile is a selectable toggle — show a clear selected state. */
+    .suggestion-card.selected {
+      border-color: var(--green, #3fb950);
+      background: color-mix(in srgb, var(--green, #3fb950) 10%, var(--surface-2));
+      box-shadow: inset 0 0 0 1px var(--green, #3fb950);
+    }
+    .suggestion-card .short-idea-check { pointer-events: auto; cursor: pointer; }
 
     .suggestion-card h4 {
       font-size: 0.95rem;
@@ -1163,12 +1171,16 @@
 
         const cards = data.suggestions.map((s, i) => {
           const title = s.title || 'Untitled moment';
+          // The WHOLE tile is clickable to toggle selection. toggleIdea() flips the
+          // inner checkbox + the 'selected' class. A direct click on the checkbox
+          // itself is ignored by toggleIdea (it handles its own state) to avoid a
+          // double-toggle. Starts selected.
           return `
-            <div class="suggestion-card">
-              <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:8px;">
-                <input type="checkbox" class="short-idea-check" data-title="${escAttr(title)}" checked />
+            <div class="suggestion-card selected" onclick="toggleIdea(event, this)" style="cursor:pointer;">
+              <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+                <input type="checkbox" class="short-idea-check" data-title="${escHtmlAttr(title)}" checked />
                 <h4 style="margin:0;">${escHtml(title)}</h4>
-              </label>
+              </div>
               ${s.hook ? `<p style="font-style:italic;">“${escHtml(s.hook)}”</p>` : ''}
               ${s.angle ? `<p>${escHtml(s.angle)}</p>` : ''}
               ${s.hint ? `<p style="color:var(--text-dim);font-size:0.8rem;">${escHtml(s.hint)}</p>` : ''}
@@ -1195,6 +1207,16 @@
         btn.disabled = false;
         btn.textContent = 'Get Ideas';
       }
+    }
+
+    // Toggle a whole idea tile's selection. Clicking anywhere on the tile flips
+    // its checkbox + 'selected' style. If the click landed directly on the
+    // checkbox, let the native toggle happen and just sync the class (no flip).
+    function toggleIdea(event, card) {
+      const cb = card.querySelector('.short-idea-check');
+      if (!cb) return;
+      if (event.target !== cb) cb.checked = !cb.checked;
+      card.classList.toggle('selected', cb.checked);
     }
 
     async function createSelectedShorts(btn) {
