@@ -202,8 +202,11 @@ class ShortsProducer {
     // 3. Assemble vertical video. `match` (optional) enables the scoreboard
     // overlay for World Cup recap Shorts. `useClips` layers Pexels B-roll.
     const videoPath = path.join(folderPath, 'video.mp4');
+    // hookText: bold first-frame hook overlay (Shorts retention). Opt-out via
+    // SHORTS_HOOK_OVERLAY=false.
+    const hookText = (process.env.SHORTS_HOOK_OVERLAY === 'false') ? null : (script.hookText || null);
     await this.gen.generateVideo(script, verticalImages, audioPath, videoPath,
-      { width: W, height: H, match, useClips, clipMode });
+      { width: W, height: H, match, useClips, clipMode, hookText });
     // Per-scene clip-vs-still source (set by the assembler) for the (i) panel.
     const clipMeta = (useClips && Array.isArray(this.gen._lastClipMeta)) ? this.gen._lastClipMeta : null;
 

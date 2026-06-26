@@ -253,13 +253,15 @@ Requirements:
   async generateShortScript(moment) {
     const subject = moment.title;
     const systemPrompt = `You are a viral YouTube Shorts scriptwriter for a FOOTBALL (soccer) channel. ` +
-      `Write a single, punchy narration for ONE football moment. Output valid JSON only, no markdown.`;
+      `Shorts live or die in the first 1-2 seconds. Write a single, punchy narration for ONE ` +
+      `football moment that hooks HARD and immediately. Output valid JSON only, no markdown.`;
     const userPrompt = `Write a YouTube Short narration about this football moment: "${subject}".${moment.hint ? ' Context: ' + moment.hint : ''}
 
 Return JSON:
 {
   "title": "punchy Shorts title (<=70 chars, no clickbait lies)",
-  "hook": "1-sentence hook that grabs attention in the first 2 seconds",
+  "hookText": "3-6 word BIG on-screen hook for the first frame — a curiosity gap or bold claim, e.g. 'The goal that broke records', 'Nobody saw this coming', 'Wait for the finish'. NO period. Punchy, scroll-stopping.",
+  "hook": "the SPOKEN opening line (1 sentence) — start mid-tension with a bold claim or question that creates a curiosity gap; NO slow throat-clearing like 'witness the magic' or 'in this video'. Make the viewer NEED to keep watching.",
   "sections": [
     {"title": "short on-screen caption (<=6 words)", "content": "the full narration", "duration": 50, "visuals": "visual direction"}
   ],
@@ -268,7 +270,9 @@ Return JSON:
 
 Rules:
 - TOTAL narration (hook + content) MUST be <= 150 words (~50 seconds spoken).
-- Start with the hook - Shorts live or die in the first 2 seconds.
+- The SPOKEN hook must hit in the first 2 seconds — concrete tension, no warm-up.
+  BAD: "Witness the magic of Messi." GOOD: "This is the goal that silenced 80,000 fans."
+- hookText is a SEPARATE, very short on-screen line (NOT a sentence) for big bold display.
 - Be factual and specific about the moment; this is football/soccer only.
 - Exactly ONE section.
 - Return ONLY the JSON object.`;
@@ -284,6 +288,7 @@ Rules:
     if (!ai) {
       ai = {
         title: subject,
+        hookText: 'You have to see this',
         hook: `${subject} - one of football's greatest moments.`,
         sections: [{ title: subject.slice(0, 40), content:
           `${subject}. ${moment.hint || ''} A moment football fans will never forget.`,
@@ -295,6 +300,8 @@ Rules:
     const section = (ai.sections && ai.sections[0]) || {};
     return {
       title: (ai.title || subject).slice(0, 100),
+      // Big on-screen first-frame hook (3-6 words). Distinct from the spoken hook.
+      hookText: (ai.hookText || '').slice(0, 40),
       hook: { type: 'ai-generated', text: ai.hook || '', duration: '0:00-0:02' },
       introduction: { greeting: '', topicIntro: '', valueProposition: '', credibility: '', duration: '' },
       mainContent: {

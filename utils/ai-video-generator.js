@@ -703,9 +703,19 @@ class AIVideoGenerator {
         // zoompan via ffmpeg overlay, so the title is never cropped by the zoom.
         // Match-recap mode: show a scoreboard band (flags + score) instead of the
         // plain section title, so the video reads as an actual match recap.
-        const textOverlay = options.match
+        let textOverlay = options.match
           ? await this._makeScoreboardOverlay(options.match, tempDir, i, { width: W, height: H })
           : await this._makeTextOverlay(sectionTitle, tempDir, i, { width: W, height: H });
+
+        // BOLD FIRST-FRAME HOOK: on the opening scene only, burn a big curiosity-gap
+        // line across the top (the single biggest Shorts retention lever). Merged
+        // into the scene's overlay PNG so every scene-type path (clip/card/still)
+        // shows it. Portrait/Shorts only by default. options.hookText drives it.
+        if (i === 0 && options.hookText && H > W) {
+          try {
+            textOverlay = await this._mergeHookOverlay(textOverlay, options.hookText, tempDir, { width: W, height: H });
+          } catch (e) { this.logger.warn(`Hook overlay failed: ${e.message}`); }
+        }
 
         // CLIP scene: render the real B-roll (cover-crop, no zoompan) with the
         // same overlay. Retry ONCE on failure (a timeout is usually transient
@@ -1221,6 +1231,69 @@ class AIVideoGenerator {
     }
     execSync(cmd, { stdio: 'pipe', timeout });
     return clipPath;
+  }
+
+  /**
+   * Build a BOLD first-frame HOOK overlay (big curiosity-gap line across the TOP)
+   * and merge it onto the scene's existing overlay PNG (caption/scoreboard). The
+   * hook is the single biggest Shorts retention lever — it must read instantly.
+   * Big uppercase text, heavy black stroke, semi-opaque band behind it for
+   * legibility over any image. Returns a new merged overlay PNG path. If `base`
+   * is null, returns a hook-only overlay.
+   */
+  async _mergeHookOverlay(base, hookText, tempDir, dims = {}) {
+    if (!sharp) return base;
+    const W = dims.width || 1080, H = dims.height || 1920;
+    const text = String(hookText).toUpperCase().replace(/[.]+$/, '').trim();
+    // Word-wrap to <= ~14 chars/line, max 3 lines.
+    const words = text.split(/\s+/);
+    const lines = []; let cur = '';
+    for (const w of words) {
+      if ((cur + ' ' + w).trim().length > 14 && cur) { lines.push(cur); cur = w; }
+      else cur = (cur + ' ' + w).trim();
+    }
+    if (cur) lines.push(cur);
+    const safe = lines.slice(0, 3).map(l => this._escapeXml(l));
+
+    const fontSize = 86;
+    const lineH = fontSize * 1.15;
+    const blockH = safe.length * lineH;
+    const pad = 36;
+    const bandTop = Math.round(H * 0.07);          // high, clear of the very top
+    const bandH = blockH + pad * 2;
+    const firstBaseline = bandTop + pad + fontSize;
+    const textEls = safe.map((line, i) => {
+      const y = firstBaseline + i * lineH;
+      return `
+        <text x="${W / 2}" y="${y}" text-anchor="middle"
+          font-family="Arial Black, Helvetica, sans-serif" font-size="${fontSize}" font-weight="900"
+          stroke="#000000" stroke-width="10" fill="#000000" paint-order="stroke">${line}</text>
+        <text x="${W / 2}" y="${y}" text-anchor="middle"
+          font-family="Arial Black, Helvetica, sans-serif" font-size="${fontSize}" font-weight="900"
+          fill="#FFE600">${line}</text>`; // bright yellow = high-contrast attention
+    }).join('');
+    const svg = Buffer.from(`
+      <svg width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">
+        <defs><linearGradient id="hk" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#000" stop-opacity="0.0"/>
+          <stop offset="20%" stop-color="#000" stop-opacity="0.55"/>
+          <stop offset="80%" stop-color="#000" stop-opacity="0.55"/>
+          <stop offset="100%" stop-color="#000" stop-opacity="0.0"/>
+        </linearGradient></defs>
+        <rect x="0" y="${bandTop - pad}" width="${W}" height="${bandH + pad * 2}" fill="url(#hk)"/>
+        ${textEls}
+      </svg>`);
+    const hookPng = await sharp(svg).png().toBuffer();
+
+    const out = path.join(tempDir, `hook_overlay.png`);
+    if (base && fs && require('fs').existsSync(base)) {
+      // Composite hook ON TOP of the existing caption/scoreboard overlay.
+      await sharp(base).composite([{ input: hookPng, top: 0, left: 0 }]).png().toFile(out);
+    } else {
+      await sharp({ create: { width: W, height: H, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } } })
+        .composite([{ input: hookPng, top: 0, left: 0 }]).png().toFile(out);
+    }
+    return out;
   }
 
   /**
