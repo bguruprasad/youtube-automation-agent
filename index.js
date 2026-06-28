@@ -683,6 +683,44 @@ class YouTubeAutomationAgent {
     // WC match recap (generate + auto-upload) — the scheduler enqueues these so
     // the hourly batch serializes instead of thrashing the machine.
     this.genQueue.register('wc-match', (payload) => this._runWcMatchJob(payload));
+    // Daily long video — the full pipeline (strategy → script → thumbnail → SEO
+    // → production → schedule). Enqueued so it serializes with shorts/recaps
+    // instead of running inline on the cron callback and thrashing ffmpeg/Flux.
+    this.genQueue.register('long', (payload) => this._runLongJob(payload));
+  }
+
+  // Queue runner for the daily long video (the core of runDailyContentGeneration).
+  // Strategy/topic is chosen here, when the worker starts the job, so it's fresh
+  // at run time. Returns a summary. payload: {} (no fields needed today).
+  async _runLongJob(payload = {}) {
+    const { CostMeter } = require('./utils/cost-meter');
+    this.agents.production.aiVideoGenerator.costMeter = new CostMeter();
+
+    const strategy = await this.agents.strategy.generateContentStrategy();
+    this.logger.info(`Long job strategy: ${strategy.topic}`);
+
+    const script = await this.agents.scriptWriter.generateScript(strategy);
+    this.logger.info(`Long job script: ${script.title}`);
+
+    const thumbnail = await this.agents.thumbnailDesigner.generateThumbnail(script);
+    const seoData = await this.agents.seoOptimizer.optimize(script, strategy);
+
+    const productionData = await this.agents.production.processContent({
+      strategy, script, thumbnail, seo: seoData,
+    });
+    this.logger.info(`Long job production completed: ${productionData.id}`);
+
+    await this.agents.publishing.scheduleContent(productionData);
+
+    // productionData exposes an absolute outputDir, not a bare folder name; the
+    // ledger/content index key on the basename (move-proof) under longs/.
+    const folder = productionData.outputDir ? path.basename(productionData.outputDir) : null;
+    if (folder) {
+      const { outputRoot } = require('./utils/paths');
+      await this._ledgerFolderCost(folder, 'video', outputRoot());
+      await this.db.upsertContent({ folder, type: 'long', title: script.title });
+    }
+    return { folder, title: script.title, topic: strategy.topic };
   }
 
   // Queue runner for a scheduled World Cup match: generate the recap in the

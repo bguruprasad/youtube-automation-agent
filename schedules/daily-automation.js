@@ -245,6 +245,26 @@ class DailyAutomation {
         return;
       }
 
+      // ENQUEUE the long video so it serializes through the FIFO generation queue
+      // with shorts/recaps instead of running the full pipeline inline on this
+      // cron callback (concurrent ffmpeg/Flux thrashed the box → render timeouts).
+      // Strategy/topic is chosen inside the 'long' runner when the worker starts
+      // the job, so it's fresh at run time.
+      if (this.app && this.app.genQueue) {
+        const { id } = await this.app.genQueue.enqueue({
+          kind: 'long',
+          label: 'Daily long video',
+          payload: {},
+        });
+        this.logger.info(`Daily content generation queued (job ${id})`);
+        timer.end();
+        await this.logAutomationEvent('daily_content_generation', 'success', { queuedJobId: id });
+        return;
+      }
+
+      // Fallback (queue unavailable): old inline path.
+      this.logger.info('Generation queue unavailable — running long video inline');
+
       // Generate content strategy
       const strategy = await this.agents.strategy.generateContentStrategy();
       this.logger.info(`Generated strategy: ${strategy.topic}`);
