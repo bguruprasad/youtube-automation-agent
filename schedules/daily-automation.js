@@ -340,6 +340,13 @@ class DailyAutomation {
       const dailyPrivacy = (await this.db.getSetting('daily_shorts_privacy')) || 'public';
       this.logger.info(`Daily Shorts will auto-upload as ${dailyPrivacy}`);
 
+      // Data-driven bias: lean moment selection toward players/teams that have
+      // actually performed on this channel (snapshot refreshed by daily-
+      // optimization). getMoment keeps an explore fraction so we still discover.
+      const insights = require('../utils/performance-insights');
+      const winners = insights.topWinners(insights.loadWinningEntities(), 8);
+      if (winners.length) this.logger.info(`Biasing Shorts toward winners: ${winners.map(w => w.name).join(', ')}`);
+
       // Dedup: don't repeat a moment used recently (within this run OR the last
       // ~14 days). Persisted as a capped list of normalized titles.
       const norm = (t) => String(t || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
@@ -355,7 +362,7 @@ class DailyAutomation {
           // Try a few times to land on a moment we haven't used recently.
           let moment = null;
           for (let attempt = 0; attempt < 6; attempt++) {
-            const cand = await momentsProvider.getMoment({ logger: this.logger });
+            const cand = await momentsProvider.getMoment({ logger: this.logger, winners });
             if (!usedSet.has(norm(cand.title))) { moment = cand; break; }
           }
           if (!moment) { this.logger.info(`Daily Short ${n + 1}/${count}: no fresh moment available, skipping`); continue; }
@@ -682,23 +689,30 @@ class DailyAutomation {
   async runDailyOptimization() {
     try {
       this.logger.info('Starting daily optimization tasks...');
-      
-      // Optimize existing content SEO
-      await this.optimizeExistingContent();
-      
-      // Update keyword performance data
-      await this.updateKeywordPerformance();
-      
-      // Clean up old files
+
+      // Learn which players/teams actually drive views on this channel, and
+      // persist a snapshot that biases future Short selection toward winners.
+      // This is the real, forward-looking optimization (replaced the old
+      // legacy SEO/keyword steps that read an empty analytics_reports table).
+      const insights = require('../utils/performance-insights');
+      const snapshot = await insights.refreshWinningEntities({
+        analytics: this.agents.analytics, logger: this.logger,
+      });
+
+      // Clean up old temp/upload files.
       await this.cleanupOldFiles();
-      
+
       this.logger.success('Daily optimization completed');
-      
-      await this.logAutomationEvent('daily_optimization', 'success');
+
+      await this.logAutomationEvent('daily_optimization', 'success', {
+        winnersBasedOn: snapshot.basedOn,
+        sampleSize: snapshot.sampleSize,
+        topWinners: insights.topWinners(snapshot, 5).map(w => w.name),
+      });
 
     } catch (error) {
       this.logger.error('Daily optimization failed:', error);
-      
+
       await this.logAutomationEvent('daily_optimization', 'error', {
         error: error.message
       });
@@ -767,47 +781,12 @@ class DailyAutomation {
     return insights;
   }
 
-  async optimizeExistingContent() {
-    // Get videos published in last 30 days with low performance
-    const lowPerformingVideos = await this.db.getAllRows(
-      `SELECT ar.* FROM analytics_reports ar
-       JOIN publish_schedule ps ON ar.video_id = ps.id
-       WHERE ar.performance_score < 50 
-       AND ps.published_at > datetime('now', '-30 days')
-       LIMIT 5`
-    );
-    
-    for (const video of lowPerformingVideos) {
-      // Re-analyze and generate optimization suggestions
-      await this.agents.analytics.analyzeVideoPerformance(video.video_id);
-      this.logger.info(`Re-analyzed low performing video: ${video.video_id}`);
-    }
-  }
-
-  async updateKeywordPerformance() {
-    // Update keyword performance based on recent analytics
-    const recentVideos = await this.getRecentlyPublishedVideos(7);
-    
-    for (const video of recentVideos) {
-      const analyticsData = await this.db.getRow(
-        'SELECT * FROM analytics_reports WHERE video_id = ?',
-        [video.id]
-      );
-      
-      if (analyticsData) {
-        const videoDetails = JSON.parse(analyticsData.video_details);
-        const keywords = videoDetails.tags || [];
-        
-        for (const keyword of keywords) {
-          await this.db.updateKeywordPerformance(
-            keyword,
-            videoDetails.statistics.viewCount,
-            video.youtube_id
-          );
-        }
-      }
-    }
-  }
+  // NOTE: optimizeExistingContent() and updateKeywordPerformance() were removed.
+  // They read analytics_reports JOIN publish_schedule — a pipeline this channel
+  // never feeds (uploads write youtube_upload.json markers, not publish_schedule
+  // rows), so they were permanent no-ops. Daily optimization now refreshes the
+  // winning-entities snapshot (utils/performance-insights) instead, which biases
+  // future Short selection toward subjects that actually perform.
 
   async cleanupOldFiles() {
     // Clean up temporary files older than 7 days

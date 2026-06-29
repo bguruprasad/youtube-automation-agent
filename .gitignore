@@ -87,6 +87,7 @@ data/captions/
 data/scripts/
 data/videos/
 data/strategy-review.json
+data/winning-entities.json
 output/
 
 # Session notes

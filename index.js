@@ -582,11 +582,13 @@ class YouTubeAutomationAgent {
     this.app.get('/suggest-shorts', async (req, res) => {
       try {
         const momentsProvider = require('./utils/football-moments-provider');
+        const insights = require('./utils/performance-insights');
         const count = parseInt(req.query.count) || 3;
         const suggestions = await momentsProvider.suggestMoments({
           count,
           openai: this.agents.strategy.openai || null,
           logger: this.logger,
+          winners: insights.topWinners(insights.loadWinningEntities(), 8),
         });
         res.json({ success: true, suggestions });
       } catch (error) {

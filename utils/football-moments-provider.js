@@ -86,7 +86,7 @@ async function getRecentMoment(logger) {
 //   - hook  : the opening line the Short would likely lead with
 // Uses OpenAI when an `openai` client is provided; otherwise falls back to a
 // random sample of curated moments (with generic angle/hook).
-async function suggestMoments({ count = 3, openai = null, logger = null } = {}) {
+async function suggestMoments({ count = 3, openai = null, logger = null, winners = null } = {}) {
   count = Math.max(1, Math.min(5, parseInt(count) || 3));
 
   // Curated fallback: sample distinct moments, synthesize angle/hook.
@@ -109,6 +109,17 @@ async function suggestMoments({ count = 3, openai = null, logger = null } = {}) 
 
   if (!openai) return curatedFallback();
 
+  // Data-driven bias: `winners` is a best-first list of {name, views} entities
+  // (players/teams) that have actually performed on THIS channel. We nudge the
+  // LLM toward them but explicitly leave room for a fresh wildcard, so we
+  // exploit what works without tunnel-visioning onto the same few subjects.
+  const winnerNames = (winners || []).map(w => w && w.name).filter(Boolean).slice(0, 8);
+  const winnerLine = winnerNames.length
+    ? `Our best-performing Shorts so far feature: ${winnerNames.join(', ')}. ` +
+      `Lean toward these players/teams for MOST ideas (they convert on our channel), ` +
+      `but include one fresh wildcard so we keep discovering new hits. `
+    : '';
+
   try {
     const response = await openai.chat.completions.create({
       model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
@@ -126,6 +137,7 @@ async function suggestMoments({ count = 3, openai = null, logger = null } = {}) 
         {
           role: 'user',
           content: `Suggest ${count} football Short ideas worth making right now. ` +
+            winnerLine +
             `Favor dramatic, instantly-recognizable moments with strong visual potential. ` +
             `Keep facts accurate; do not invent scorelines.`,
         },
@@ -149,15 +161,55 @@ async function suggestMoments({ count = 3, openai = null, logger = null } = {}) 
   }
 }
 
+// Pick a curated moment matching one of our winning entities, weighted by that
+// entity's view performance — so the bias spreads across ALL winners (not just
+// the top one), proportional to how well each performs. Returns null if no
+// winner matches any curated moment.
+function pickWinnerMoment(winners, logger = null) {
+  // Build [{moment, name, weight}] for every (winner × matching curated moment).
+  const candidates = [];
+  for (const w of (winners || [])) {
+    const name = w && w.name;
+    if (!name) continue;
+    const kw = String(name).toLowerCase();
+    const weight = Math.max(1, w.views || 1);
+    for (const m of CURATED_MOMENTS) {
+      if (`${m.title} ${m.hint}`.toLowerCase().includes(kw)) {
+        candidates.push({ moment: m, name, weight });
+      }
+    }
+  }
+  if (!candidates.length) return null;
+
+  // Weighted random over candidates (more views ⇒ more likely, but every
+  // matching winner keeps a real chance, so we don't lock onto a single title).
+  const total = candidates.reduce((s, c) => s + c.weight, 0);
+  let r = Math.random() * total;
+  let chosen = candidates[0];
+  for (const c of candidates) { r -= c.weight; if (r <= 0) { chosen = c; break; } }
+
+  if (logger) logger.info(`Moment biased toward winning entity "${chosen.name}": ${chosen.moment.title}`);
+  return { ...chosen.moment, recent: false, winnerBias: chosen.name };
+}
+
 // Main entry: returns one moment {title, hint, recent?}.
 // `preferRecent` (default true) tries the API first when configured, then
 // falls back to a curated moment.
-async function getMoment({ preferRecent = true, logger = null } = {}) {
+// `winners` (optional best-first [{name,views}]) biases the curated pick toward
+// subjects that perform on our channel. `exploreRate` keeps a fraction of picks
+// purely random so we keep discovering new hits (explore/exploit).
+async function getMoment({ preferRecent = true, logger = null, winners = null, exploreRate = 0.3 } = {}) {
   if (preferRecent && shortsConfig.footballDataApiKey) {
     const recent = await getRecentMoment(logger);
     if (recent) return recent;
   }
+  // No recent match (or recent disabled): bias the curated pick toward winners,
+  // except `exploreRate` of the time, when we stay random to explore.
+  if (winners && winners.length && Math.random() > exploreRate) {
+    const biased = pickWinnerMoment(winners, logger);
+    if (biased) return biased;
+  }
   return { ...pickRandom(CURATED_MOMENTS), recent: false };
 }
 
-module.exports = { getMoment, getRecentMoment, suggestMoments, CURATED_MOMENTS };
+module.exports = { getMoment, getRecentMoment, suggestMoments, pickWinnerMoment, CURATED_MOMENTS };
