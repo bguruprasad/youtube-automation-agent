@@ -128,7 +128,11 @@ class YouTubeAutomationAgent {
       const { folder, file } = req.params;
       const filePath = path.join(outputRoot(), folder, file);
       res.sendFile(filePath, (err) => {
-        if (err) {
+        // sendFile's callback fires for any error, including a client abort
+        // mid-stream — by which point headers are already sent. Responding
+        // again throws ERR_HTTP_HEADERS_SENT and (unhandled) crashes the
+        // process, so only reply when nothing has been sent yet.
+        if (err && !res.headersSent) {
           res.status(404).json({ error: 'File not found' });
         }
       });
@@ -544,7 +548,9 @@ class YouTubeAutomationAgent {
       const shortsConfig = require('./utils/shorts-config');
       const folder = path.basename(req.params.folder);
       const file = path.basename(req.params.file);
-      res.sendFile(path.join(shortsConfig.outputDir, folder, file));
+      res.sendFile(path.join(shortsConfig.outputDir, folder, file), (err) => {
+        if (err && !res.headersSent) res.status(404).json({ error: 'File not found' });
+      });
     });
 
     // List generated Shorts. List from the generated_content index (type short
@@ -672,6 +678,15 @@ class YouTubeAutomationAgent {
         this.logger.error('Short-from-existing failed:', error);
         res.status(500).json({ success: false, error: error.message });
       }
+    });
+
+    // Express error handler (must be LAST, 4-arg). Catches errors thrown from
+    // routes / streaming so one bad request can't bubble up and crash the
+    // automation server. Skips replying if a response is already in flight.
+    this.app.use((err, req, res, next) => {
+      this.logger.error(`Unhandled request error (${req.method} ${req.path}): ${err.message}`);
+      if (res.headersSent) return next(err);
+      res.status(500).json({ success: false, error: 'Internal server error' });
     });
   }
 
@@ -1101,11 +1116,23 @@ class YouTubeAutomationAgent {
 
   async start() {
     const initialized = await this.initialize();
-    
+
     if (!initialized) {
       console.log(chalk.red('\n❌ Failed to initialize. Please check your configuration.'));
       process.exit(1);
     }
+
+    // Last-resort safety net: keep the long-running automation server alive when
+    // an async error escapes a request (e.g. ERR_HTTP_HEADERS_SENT from a
+    // client abort mid-stream, which Express middleware can't catch). Log it
+    // instead of letting it crash the whole process. Not for the unrecoverable
+    // case — a truly broken state should still be restarted by the operator.
+    process.on('uncaughtException', (err) => {
+      this.logger.error(`uncaughtException (kept alive): ${err.stack || err.message}`);
+    });
+    process.on('unhandledRejection', (reason) => {
+      this.logger.error(`unhandledRejection (kept alive): ${reason && reason.stack ? reason.stack : reason}`);
+    });
     
     const PORT = process.env.PORT || 3456;
     this.app.listen(PORT, () => {
